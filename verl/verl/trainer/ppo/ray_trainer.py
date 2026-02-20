@@ -1498,6 +1498,22 @@ class RayPPOTrainer:
 
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                        
+                        if self.config.reward_model.get("intuitor", False):
+                            self_certaintys = batch.batch["self_certaintys"]
+                            grpo_calculation_mask = batch.batch["response_mask"]
+                            grpo_calculation_mask = grpo_calculation_mask.to(self_certaintys.dtype)
+
+                            sentence_wise_mean = masked_mean(
+                                self_certaintys.detach(), mask=grpo_calculation_mask, axis=-1
+                            )
+                            lengths = grpo_calculation_mask.sum(dim=-1).long()
+                            eos_mask_id =  lengths - 1
+                            token_level_scores = torch.zeros_like(self_certaintys)
+                            token_level_scores.scatter_(
+                                -1, eos_mask_id.unsqueeze(-1), sentence_wise_mean.unsqueeze(-1)
+                            )
+                            batch.batch["token_level_scores"] = token_level_scores
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:

@@ -208,6 +208,25 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
     }
 
+    # Add self-certainty metrics if availableAdd commentMore actions
+    if "self_certaintys" in batch.batch:
+        self_certaintys = batch.batch["self_certaintys"]  # shape: [B, T]
+        # response_mask is already computed and is boolean, convert to float for calculations
+        float_response_mask = response_mask.float() # shape: [B, T]
+
+        # Compute sentence-wise mean self-certainty
+        masked_certainty = self_certaintys * float_response_mask  # [B, T]
+        sum_certainty = masked_certainty.sum(dim=-1)  # [B]
+        count = float_response_mask.sum(dim=-1) + 1e-8  # avoid divide-by-zero; [B]
+        sentence_wise_mean_certainty = sum_certainty / count  # [B]
+
+        metrics.update({
+            "self_certainty/mean": torch.mean(sentence_wise_mean_certainty).detach().item(),
+            "self_certainty/max": torch.max(sentence_wise_mean_certainty).detach().item(),
+            "self_certainty/min": torch.min(sentence_wise_mean_certainty).detach().item(),
+            "self_certainty/std": torch.std(sentence_wise_mean_certainty).detach().item(),
+        })
+
     # multi-turn conversation
     if "__num_turns__" in batch.non_tensor_batch:
         num_turns = batch.non_tensor_batch["__num_turns__"]
