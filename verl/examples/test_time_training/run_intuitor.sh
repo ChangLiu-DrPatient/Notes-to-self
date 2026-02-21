@@ -4,7 +4,7 @@ export ACCELERATE_LOG_LEVEL=info
 export HYDRA_FULL_ERROR=1
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export CUDA_VISIBLE_DEVICES=1,2  # change this as needed
+export CUDA_VISIBLE_DEVICES=0,1  # change this as needed
 NUM_GPUS=2
 
 SCRATCH_DIR="/raid/xinyul2"
@@ -57,7 +57,7 @@ trap 'cleanup_ray; exit 1'   ERR  # cleanup on error
 
 PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     reward_model.use_reward_loop=False \
-    +reward_model.intuitor=True \
+    reward_model.reward_manager=intuitor \
     data.train_files=$HOME/data/math/train.parquet \
     data.val_files=$HOME/data/math/test.parquet \
     data.train_batch_size=128 \
@@ -94,7 +94,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.logger=['console','wandb'] \
     trainer.project_name=verl_ttt \
-    trainer.experiment_name=intuitor-MATH-Qwen2.5-1.5B \
+    trainer.experiment_name="intuitor-MATH-Qwen2.5-1.5B-${DATE}-${TIME_TAG}" \
     trainer.save_freq=2000000 \
     trainer.test_freq=10 \
     trainer.default_local_dir=$OUTPUT_DIR \

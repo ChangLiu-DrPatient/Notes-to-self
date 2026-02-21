@@ -1416,26 +1416,6 @@ class RayPPOTrainer:
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
-                    with marked_timer("reward", timing_raw, color="yellow"):
-                        # compute reward model score
-                        if self.use_rm and "rm_scores" not in batch.batch.keys():
-                            if not self.use_reward_loop:
-                                reward_tensor = self.rm_wg.compute_rm_score(batch)
-                            else:
-                                assert self.reward_loop_manager is not None, "RewardLoopManager is None"
-                                reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
-                            batch = batch.union(reward_tensor)
-
-                        # Compute or extract reward for training
-                        if self.config.reward_model.launch_reward_fn_async:
-                            future_reward = compute_reward_async.remote(
-                                data=batch, config=self.config, tokenizer=self.tokenizer
-                            )
-                        else:
-                            reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
-                                batch, reward_fn=self.reward_fn, return_dict=False
-                            )
-
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
                     # - Decoupled mode: Recomputes old_log_probs as proximal anchor (3 policies: π_rollout, π_old, π_θ)
@@ -1488,6 +1468,26 @@ class RayPPOTrainer:
                         with marked_timer("values", timing_raw, color="cyan"):
                             values = self._compute_values(batch)
                             batch = batch.union(values)
+                    
+                    with marked_timer("reward", timing_raw, color="yellow"):
+                        # compute reward model score
+                        if self.use_rm and "rm_scores" not in batch.batch.keys():
+                            if not self.use_reward_loop:
+                                reward_tensor = self.rm_wg.compute_rm_score(batch)
+                            else:
+                                assert self.reward_loop_manager is not None, "RewardLoopManager is None"
+                                reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
+                            batch = batch.union(reward_tensor)
+
+                        # Compute or extract reward for training
+                        if self.config.reward_model.launch_reward_fn_async:
+                            future_reward = compute_reward_async.remote(
+                                data=batch, config=self.config, tokenizer=self.tokenizer
+                            )
+                        else:
+                            reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
+                                batch, reward_fn=self.reward_fn, return_dict=False
+                            )
 
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
@@ -1498,22 +1498,6 @@ class RayPPOTrainer:
 
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-                        
-                        if self.config.reward_model.get("intuitor", False):
-                            self_certaintys = batch.batch["self_certaintys"]
-                            grpo_calculation_mask = batch.batch["response_mask"]
-                            grpo_calculation_mask = grpo_calculation_mask.to(self_certaintys.dtype)
-
-                            sentence_wise_mean = masked_mean(
-                                self_certaintys.detach(), mask=grpo_calculation_mask, axis=-1
-                            )
-                            lengths = grpo_calculation_mask.sum(dim=-1).long()
-                            eos_mask_id =  lengths - 1
-                            token_level_scores = torch.zeros_like(self_certaintys)
-                            token_level_scores.scatter_(
-                                -1, eos_mask_id.unsqueeze(-1), sentence_wise_mean.unsqueeze(-1)
-                            )
-                            batch.batch["token_level_scores"] = token_level_scores
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
