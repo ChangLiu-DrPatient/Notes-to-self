@@ -91,24 +91,30 @@ class IntuitorRewardManager(AbstractRewardManager):
             )
 
             if isinstance(score, dict):
+                reward = score["score"]
                 # Store the information including original reward
                 for key, value in score.items():
                     reward_extra_info[key].append(value)
             else:
+                reward = score
                 reward_extra_info["score"].append(score)
                 reward_extra_info["acc"].append(score > 0)
 
-            # compute self-certainty reward
-            self_certaintys = data_item.batch["self_certaintys"]
-            grpo_calculation_mask = data_item.batch["response_mask"]
-            grpo_calculation_mask = grpo_calculation_mask.to(self_certaintys.dtype)
+            if "self_certaintys" in data_item.batch.keys():
+                # Compute self-certainty reward during training
+                self_certaintys = data_item.batch["self_certaintys"]
+                grpo_calculation_mask = data_item.batch["response_mask"]
+                grpo_calculation_mask = grpo_calculation_mask.to(self_certaintys.dtype)
 
-            sentence_wise_mean = masked_mean(
-                self_certaintys.detach(), mask=grpo_calculation_mask, axis=-1
-            )
-            length = grpo_calculation_mask.sum(dim=-1).long()
-            eos_mask_id =  length - 1
-            reward_tensor[i, eos_mask_id] = sentence_wise_mean
+                sentence_wise_mean = masked_mean(
+                    self_certaintys.detach(), mask=grpo_calculation_mask, axis=-1
+                )
+                length = grpo_calculation_mask.sum(dim=-1).long()
+                eos_mask_id =  length - 1
+                reward_tensor[i, eos_mask_id] = sentence_wise_mean
+            else:
+                # Compute ground-truth based reward during validation
+                reward_tensor[i, valid_response_length - 1] = reward
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
