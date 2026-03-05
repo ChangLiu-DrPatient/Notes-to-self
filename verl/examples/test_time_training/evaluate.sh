@@ -7,17 +7,23 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=0,1  # change this as needed
 NUM_GPUS=2
 
-SCRATCH_DIR="/raid/xinyul2"
+
+MODEL_PATH=Qwen/Qwen3-4B-Base
+N_SAMPLES=32
+
 DATE=$(date +%m%d)
 TIME_TAG=$(date +%H%M%S)
-OUTPUT_DIR="${SCRATCH_DIR}/checkpoints/intuitor-verl/MATH-Qwen2.5-1.5B/${DATE}-${TIME_TAG}"
+OUTPUT_DIR="/raid/xinyul2/eval/base/Qwen3-4B-Base/"
+mkdir -p "$OUTPUT_DIR"
+
+LOG_FILE="${OUTPUT_DIR}/evaluation.log"
 
 # ---------------- Ray isolation (single-node) ----------------
 unset RAY_ADDRESS
 unset RAY_NAMESPACE
 
 RUN_ID="${DATE}_${TIME_TAG}_$$"  # $$ is the current PID
-export RAY_TMPDIR="${SCRATCH_DIR}/ray/${RUN_ID}"
+export RAY_TMPDIR="/raid/xinyul2/ray/${RUN_ID}"
 mkdir -p "$RAY_TMPDIR"
 
 # Find a free port and start a dedicated local Ray head.
@@ -55,17 +61,18 @@ trap 'cleanup_ray; exit 1'   ERR  # cleanup on error
 # ------------------------------------------------------------
 
 
+# use the trainer for evaluation only
 PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     reward_model.use_reward_loop=False \
-    reward_model.reward_manager=intuitor \
+    reward_model.reward_manager=naive \
     data.train_files=$HOME/data/math/train.parquet \
-    data.val_files=$HOME/data/math/test.parquet \
+    data.val_files=$HOME/data/AIME24/test.parquet \
     data.train_batch_size=128 \
     data.max_prompt_length=512 \
     data.max_response_length=3072 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B \
+    actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.model.use_fused_kernels=False \
     actor_rollout_ref.actor.optim.lr=3e-6 \
     actor_rollout_ref.actor.optim.warmup_style=cosine \
@@ -84,18 +91,26 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.n=8 \
+    actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+    actor_rollout_ref.rollout.val_kwargs.n=$N_SAMPLES \
+    actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
+    actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
+    actor_rollout_ref.rollout.val_kwargs.top_k=20 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
-    trainer.val_before_train=False \
+    trainer.val_before_train=True \
     trainer.n_gpus_per_node=$NUM_GPUS \
     trainer.nnodes=1 \
-    trainer.logger=['console','wandb'] \
-    trainer.project_name=verl_ttt \
-    trainer.experiment_name="intuitor-MATH-Qwen2.5-1.5B-${DATE}-${TIME_TAG}" \
+    trainer.logger=['console'] \
+    trainer.project_name=eval_ttt \
+    trainer.experiment_name="Qwen3-4B-Base-Eval" \
     trainer.save_freq=2000000 \
     trainer.test_freq=10 \
+    trainer.validation_data_dir=$OUTPUT_DIR \
+    trainer.max_actor_ckpt_to_keep=0 \
+    trainer.max_critic_ckpt_to_keep=0 \
     trainer.default_local_dir=$OUTPUT_DIR \
-    trainer.total_epochs=1 2>&1 | tee verl_math_intuitor.log
+    trainer.total_epochs=0 2>&1 | tee "$LOG_FILE"
