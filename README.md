@@ -18,10 +18,28 @@ pip install --no-deps -e .
 
 To prepare the training dataset, run:
 ```bash
-python -m examples.data_preprocess.math_dataset
+python -m examples.data_preprocess.math_dataset_ttt --local_save_dir ~/data/math --data_source DigitalLearningGmbH/MATH-lighteval
 ```
-The `json` files for AIME24, AIME25, AMC, and MATH-500 are under `verl/data` (copied from EVOL-RL repo). To prepare the test datasets, run:
+To prepare MATH-500 for evaluation, run
 ```bash
-python examples/data_preprocess/math_dataset_test.py
+python -m examples.data_preprocess.math_dataset_ttt --local_save_dir ~/data/MATH-500 --data_source HuggingFaceH4/MATH-500
 ```
 The `parquet` files will be generated under `~/data/`.
+
+## Datasets
+
+To train a model, run:
+```bash
+bash examples/test_time_training/run.sh
+```
+
+## Evaluate
+
+To evaluate a trained model, first merge the verl checkpoints into a huggingface model:
+```bash
+bash examples/test_time_training/merge.sh
+```
+Then run
+```bash
+bash examples/test_time_training/evaluate.sh
+```

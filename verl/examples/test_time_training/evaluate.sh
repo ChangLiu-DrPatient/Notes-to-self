@@ -2,20 +2,26 @@ set -x
 
 export ACCELERATE_LOG_LEVEL=info
 export HYDRA_FULL_ERROR=1
+PYTHONUNBUFFERED=1
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export CUDA_VISIBLE_DEVICES=0,1  # change this as needed
-NUM_GPUS=2
-
-
-MODEL_PATH=Qwen/Qwen3-4B-Base
-N_SAMPLES=32
+export CUDA_VISIBLE_DEVICES=0,1,2,4  # change this as needed
+NUM_GPUS=4
 
 DATE=$(date +%m%d)
 TIME_TAG=$(date +%H%M%S)
-OUTPUT_DIR="/raid/xinyul2/eval/base/Qwen3-4B-Base/"
-mkdir -p "$OUTPUT_DIR"
+MODEL_PATH=/raid/xinyul2/checkpoints/grpo-intuitor/Qwen3-4B-Base/0307-173622/global_step_58/merged_hf_model  # cannot end with /
+N_SAMPLES=32
 
+if [[ "$MODEL_PATH" == Qwen/* ]]; then  # evaluate base model
+  OUTPUT_DIR="/raid/xinyul2/eval/base/${MODEL_PATH##*/}"
+else  # evaluate checkpoints
+  OUTPUT_DIR=$(dirname "$MODEL_PATH")
+  OUTPUT_DIR="/raid/xinyul2/eval/${OUTPUT_DIR#/raid/xinyul2/checkpoints/}"
+fi
+echo "OUTPUT_DIR=$OUTPUT_DIR"
+
+mkdir -p "$OUTPUT_DIR"
 LOG_FILE="${OUTPUT_DIR}/evaluation.log"
 
 # ---------------- Ray isolation (single-node) ----------------
@@ -62,11 +68,11 @@ trap 'cleanup_ray; exit 1'   ERR  # cleanup on error
 
 
 # use the trainer for evaluation only
-PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
+python3 -m verl.trainer.main_ppo \
     reward_model.use_reward_loop=False \
     reward_model.reward_manager=naive \
     data.train_files=$HOME/data/math/train.parquet \
-    data.val_files=$HOME/data/AIME24/test.parquet \
+    data.val_files=$HOME/data/MATH-500/test.parquet \
     data.train_batch_size=128 \
     data.max_prompt_length=512 \
     data.max_response_length=3072 \
@@ -96,7 +102,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
     actor_rollout_ref.rollout.val_kwargs.top_k=20 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \

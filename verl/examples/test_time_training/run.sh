@@ -2,14 +2,22 @@ set -x
 
 export ACCELERATE_LOG_LEVEL=info
 export HYDRA_FULL_ERROR=1
+export PYTHONUNBUFFERED=1
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export CUDA_VISIBLE_DEVICES=0,1  # change this as needed
-NUM_GPUS=2
+export CUDA_VISIBLE_DEVICES=0,1,2,4
+NUM_GPUS=4
 
 DATE=$(date +%m%d)
 TIME_TAG=$(date +%H%M%S)
-OUTPUT_DIR="$/raid/xinyul2/checkpoints/intuitor-verl/MATH-Qwen2.5-1.5B/${DATE}-${TIME_TAG}"
+ADV_ESTIMATOR=grpo
+REWARD_MANAGER=naive
+MODEL_PATH=Qwen/Qwen3-4B-Base
+
+MODEL_NAME="${MODEL_PATH##*/}"
+OUTPUT_DIR="/raid/xinyul2/checkpoints/${ADV_ESTIMATOR}-${REWARD_MANAGER}/${MODEL_NAME}/${DATE}-${TIME_TAG}"
+mkdir -p "$OUTPUT_DIR"
+LOG_FILE="${OUTPUT_DIR}/train.log"
 
 # ---------------- Ray isolation (single-node) ----------------
 unset RAY_ADDRESS
@@ -54,26 +62,26 @@ trap 'cleanup_ray; exit 1'   ERR  # cleanup on error
 # ------------------------------------------------------------
 
 
-PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
+python3 -m verl.trainer.main_ppo \
     reward_model.use_reward_loop=False \
-    reward_model.reward_manager=intuitor \
-    data.train_files=$HOME/data/math/train.parquet \
-    data.val_files=$HOME/data/math/test.parquet \
+    reward_model.reward_manager=${REWARD_MANAGER} \
+    data.train_files="[$HOME/data/math/train.parquet]" \
+    data.val_files="[$HOME/data/MATH-500/test.parquet]" \
     data.train_batch_size=128 \
     data.max_prompt_length=512 \
     data.max_response_length=3072 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B \
+    actor_rollout_ref.model.path=${MODEL_PATH} \
     actor_rollout_ref.model.use_fused_kernels=False \
-    actor_rollout_ref.actor.optim.lr=3e-6 \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.optim.warmup_style=cosine \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.1 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=128 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=True \
-    actor_rollout_ref.actor.kl_loss_coef=0.005 \
+    actor_rollout_ref.actor.kl_loss_coef=0.0005 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
@@ -85,16 +93,16 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    algorithm.adv_estimator=grpo \
+    algorithm.adv_estimator=${ADV_ESTIMATOR} \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
-    trainer.val_before_train=False \
+    trainer.val_before_train=True \
     trainer.n_gpus_per_node=$NUM_GPUS \
     trainer.nnodes=1 \
     trainer.logger=['console','wandb'] \
     trainer.project_name=verl_ttt \
-    trainer.experiment_name="intuitor-MATH-Qwen2.5-1.5B-${DATE}-${TIME_TAG}" \
+    trainer.experiment_name="${ADV_ESTIMATOR}-${REWARD_MANAGER}-${MODEL_NAME}-${DATE}-${TIME_TAG}" \
     trainer.save_freq=2000000 \
-    trainer.test_freq=10 \
+    trainer.test_freq=5 \
     trainer.default_local_dir=$OUTPUT_DIR \
-    trainer.total_epochs=1 2>&1 | tee verl_math_intuitor.log
+    trainer.total_epochs=1 2>&1 | tee "$LOG_FILE"
