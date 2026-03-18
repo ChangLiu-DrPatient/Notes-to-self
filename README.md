@@ -26,12 +26,20 @@ python -m examples.data_preprocess.math_dataset_ttt --local_save_dir ~/data/MATH
 ```
 The `parquet` files will be generated under `~/data/`.
 
-## Datasets
+## Train
 
 To train a model, run:
 ```bash
 bash examples/test_time_training/run.sh
 ```
+
+Different supervision signals are managed by `reward_model.reward_manager` in `run.sh`. Current code supports
+
+| reward_manager | reward |
+|---|---|
+| naive | 0/1 based on ground-truth |
+| [intuitor](https://arxiv.org/pdf/2505.19590) | self-certainty |
+
 
 ## Evaluate
 
@@ -43,3 +51,7 @@ Then run
 ```bash
 bash examples/test_time_training/evaluate.sh
 ```
+
+## Analysis
+
+The code to run analysis regarding prompt accuracy and diversity for base and trained models can be found in `scripts/analyze.py`.
