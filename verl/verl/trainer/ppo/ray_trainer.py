@@ -331,6 +331,16 @@ class RayPPOTrainer:
         # legacy reward model implementation
         self.use_rm = need_reward_model(self.role_worker_mapping)
         self.use_reward_loop = self.config.reward_model.use_reward_loop
+        self.reward_manager_name = OmegaConf.select(self.config, "reward_manager.name") or self.config.reward_model.get(
+            "reward_manager", "naive"
+        )
+        self.use_ttrl = self.reward_manager_name == "ttrl"
+        if self.use_ttrl:
+            self.n_votes_per_prompt = self.config.reward_model.reward_kwargs.n_votes_per_prompt
+            self.n_samples_per_prompt = self.config.reward_model.reward_kwargs.n_samples_per_prompt
+        else:
+            self.n_votes_per_prompt = None
+            self.n_samples_per_prompt = None
 
         self.use_critic = need_critic(self.config)
         self.ray_worker_group_cls = ray_worker_group_cls
@@ -1144,6 +1154,37 @@ class RayPPOTrainer:
         )
         metrics.update(global_balance_stats)
 
+    def _select_top_k_per_prompt(
+        self, data: DataProto, n_votes_per_prompt: int, n_samples_per_prompt: int
+    ) -> DataProto:
+        assert len(data) % n_votes_per_prompt == 0, "data length must be divisible by n_votes_per_prompt"
+
+        selected_indices = []
+        num_prompts = len(data) // n_votes_per_prompt
+        for prompt_idx in range(num_prompts):
+            start = prompt_idx * n_votes_per_prompt
+            selected_indices.extend(range(start, start + n_samples_per_prompt))
+
+        selected_batch = data[selected_indices]
+        selected_batch.meta_info = dict(data.meta_info)
+        return selected_batch
+
+    def _restore_ttrl_prompt_order(self, data: DataProto) -> DataProto:
+        try:
+            sorted_indices = sorted(
+                range(len(data)),
+                key=lambda i: data[i].non_tensor_batch["extra_info"]["index"],
+            )
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                "TTRL requires each sample to carry `non_tensor_batch[\"extra_info\"][\"index\"]` so the "
+                "trainer can restore prompt-group order before reward computation."
+            ) from exc
+
+        restored_batch = data[sorted_indices]
+        restored_batch.meta_info = dict(data.meta_info)
+        return restored_batch
+
     def _compute_values(self, batch: DataProto) -> DataProto:
         if self.use_legacy_worker_impl == "disable":
             batch_td = batch.to_tensordict()
@@ -1349,6 +1390,9 @@ class RayPPOTrainer:
                     [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                 )
 
+                if self.use_ttrl:
+                    self.config.actor_rollout_ref.rollout.n = self.n_votes_per_prompt
+
                 gen_batch = self._get_gen_batch(batch)
 
                 # pass global_steps to trace
@@ -1474,6 +1518,9 @@ class RayPPOTrainer:
                             batch = batch.union(values)
                     
                     with marked_timer("reward", timing_raw, color="yellow"):
+                        if self.use_ttrl:
+                            batch = self._restore_ttrl_prompt_order(batch)
+
                         # compute reward model score
                         if self.use_rm and "rm_scores" not in batch.batch.keys():
                             if not self.use_reward_loop:
@@ -1498,10 +1545,36 @@ class RayPPOTrainer:
                         reward_extra_infos_dict: dict[str, list]
                         if self.config.reward_model.launch_reward_fn_async:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
+
+                        if self.use_ttrl:
+                            batch = self._select_top_k_per_prompt(
+                                batch,
+                                n_votes_per_prompt=self.n_votes_per_prompt,
+                                n_samples_per_prompt=self.n_samples_per_prompt,
+                            )
+                            self.config.actor_rollout_ref.rollout.n = self.n_samples_per_prompt
+                            batch.meta_info["global_token_num"] = torch.sum(
+                                batch.batch["attention_mask"], dim=-1
+                            ).tolist()
+
                         batch.batch["token_level_scores"] = reward_tensor
 
+                        reward_extra_info_keys: list[str] = []
                         if reward_extra_infos_dict:
+                            reward_extra_info_keys = list(reward_extra_infos_dict.keys())
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+
+                        if self.use_ttrl and self.config.trainer.balance_batch:
+                            self._balance_batch(batch, metrics=metrics)
+                            batch.meta_info["global_token_num"] = torch.sum(
+                                batch.batch["attention_mask"], dim=-1
+                            ).tolist()
+                            if reward_extra_info_keys:
+                                # Keep the standalone dict in the same order as the post-balance batch so
+                                # generic rollout dumping sees row-aligned reward_extra_info values.
+                                reward_extra_infos_dict = {
+                                    key: batch.non_tensor_batch[key].tolist() for key in reward_extra_info_keys
+                                }
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:

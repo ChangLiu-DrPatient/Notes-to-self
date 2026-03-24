@@ -40,6 +40,11 @@ Different supervision signals are managed by `reward_model.reward_manager` in `r
 | naive | 0/1 based on ground-truth |
 | [intuitor](https://arxiv.org/pdf/2505.19590) | self-certainty |
 
+To train a model with ttrl, run:
+```bash
+bash examples/test_time_training/run_ttrl.sh
+```
+
 
 ## Evaluate
 
@@ -50,6 +55,11 @@ bash examples/test_time_training/merge.sh
 Then run
 ```bash
 bash examples/test_time_training/evaluate.sh
+```
+
+For ttrl, run 
+```bash
+bash examples/test_time_training/evaluate_ttrl.sh
 ```
 
 ## Analysis

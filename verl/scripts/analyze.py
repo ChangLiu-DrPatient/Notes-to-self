@@ -22,6 +22,73 @@ def per_prompt_output_accuracy(jsonl_path):
     return prompt_to_avg_score
 
 
+def overall_accuracy(jsonl_path):
+    """
+    Return (micro_acc, macro_acc, n_lines, n_prompts).
+
+    - micro: mean of every rollout line's score (weights rollouts).
+    - macro: mean of per-prompt average scores (weights each prompt equally).
+    """
+    prompt_to_scores = {}
+    all_scores = []
+    with open(jsonl_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            prompt = data["input"]
+            score = data["score"]
+            all_scores.append(score)
+            if prompt not in prompt_to_scores:
+                prompt_to_scores[prompt] = []
+            prompt_to_scores[prompt].append(score)
+    micro = float(np.mean(all_scores)) if all_scores else float("nan")
+    per_prompt = [np.mean(scores) for scores in prompt_to_scores.values()]
+    macro = float(np.mean(per_prompt)) if per_prompt else float("nan")
+    return micro, macro, len(all_scores), len(prompt_to_scores)
+
+
+def pass_at_k_means(jsonl_path):
+    """
+    Mean pass@k across prompts from JSONL lines that store duplicated prompt-level metrics.
+
+    Reads every key starting with ``pass@`` (e.g. ``pass@32``, ``pass@16``). For each prompt
+    (``input``), merges ``pass@*`` from all rollouts (values are identical per prompt; first
+    seen wins if keys differ). Then averages each metric over prompts that define that key.
+
+    Returns:
+        dict[str, float]: mapping ``pass@...`` -> mean value across prompts that had that key.
+    """
+    prompt_to_pass = {}
+    with open(jsonl_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            prompt = data["input"]
+            if prompt not in prompt_to_pass:
+                prompt_to_pass[prompt] = {}
+            row_pass = {k: data[k] for k in data if k.startswith("pass@")}
+            for k, v in row_pass.items():
+                if k not in prompt_to_pass[prompt]:
+                    prompt_to_pass[prompt][k] = v
+
+    if not prompt_to_pass:
+        return {}
+
+    all_keys = set()
+    for pk in prompt_to_pass.values():
+        all_keys.update(pk.keys())
+
+    out = {}
+    for key in sorted(all_keys):
+        vals = []
+        for pass_keys in prompt_to_pass.values():
+            if key in pass_keys:
+                v = pass_keys[key]
+                if isinstance(v, (bool, int, float, np.number)):
+                    vals.append(float(v))
+        if vals:
+            out[key] = float(np.mean(vals))
+    return out
+
+
 def per_prompt_output_diversity(jsonl_path):
     """
     Compute output diversity per prompt.
@@ -156,29 +223,50 @@ def plot_heatmap(dict1, dict2, model1, model2, metric="accuracy"):
 
 
 if __name__ == "__main__":
-    jsonl_path = "/raid/xinyul2/eval/base/Qwen3-4B-Base/0.jsonl"
+    jsonl_path = "/raid/changl8/eval/base/Qwen3-1.7B-Base/0.jsonl"
     base_acc = per_prompt_output_accuracy(jsonl_path)
     base_diversity = per_prompt_output_diversity(jsonl_path)
-    
-    jsonl_path = "/raid/xinyul2/eval/grpo-naive/Qwen3-4B-Base/0307-173622/global_step_58/0.jsonl"
-    gt_acc = per_prompt_output_accuracy(jsonl_path)
-    gt_diversity = per_prompt_output_diversity(jsonl_path)
+    bm, bM, bn, bp = overall_accuracy(jsonl_path)
+    print(
+        f"[Base] overall acc: micro={bm:.4f} macro={bM:.4f} "
+        f"(n_rollouts={bn}, n_prompts={bp})"
+    )
+    base_passk = pass_at_k_means(jsonl_path)
+    if base_passk:
+        print(f"[Base] pass@k (mean over prompts): {base_passk}")
 
-    jsonl_path = "/raid/xinyul2/eval/grpo-intuitor/Qwen3-4B-Base/0307-135909/global_step_58/0.jsonl"
-    intuitor_acc = per_prompt_output_accuracy(jsonl_path)
-    intuitor_diversity = per_prompt_output_diversity(jsonl_path)
+    jsonl_path = "/raid/changl8/eval/ttrl-verl/ttrl/Qwen3-1.7B-Base/0323-221418/global_step_58/0.jsonl"
+    ttrl_acc = per_prompt_output_accuracy(jsonl_path)
+    ttrl_diversity = per_prompt_output_diversity(jsonl_path)
+    tm, tM, tn, tp = overall_accuracy(jsonl_path)
+    print(
+        f"[TTRL] overall acc: micro={tm:.4f} macro={tM:.4f} "
+        f"(n_rollouts={tn}, n_prompts={tp})"
+    )
+    ttrl_passk = pass_at_k_means(jsonl_path)
+    if ttrl_passk:
+        print(f"[TTRL] pass@k (mean over prompts): {ttrl_passk}")
 
-    # check if diversity is a good proxy of accuracy
+    # jsonl_path = "/raid/xinyul2/eval/grpo-naive/Qwen3-4B-Base/0307-173622/global_step_58/0.jsonl"
+    # gt_acc = per_prompt_output_accuracy(jsonl_path)
+    # gt_diversity = per_prompt_output_diversity(jsonl_path)
+
+    # jsonl_path = "/raid/xinyul2/eval/grpo-intuitor/Qwen3-4B-Base/0307-135909/global_step_58/0.jsonl"
+    # intuitor_acc = per_prompt_output_accuracy(jsonl_path)
+    # intuitor_diversity = per_prompt_output_diversity(jsonl_path)
+
+    # # check if diversity is a good proxy of accuracy
     plot_acc_vs_div(base_acc, base_diversity, "Base")
-    plot_acc_vs_div(gt_acc, gt_diversity, "Ground Truth")
-    plot_acc_vs_div(intuitor_acc, intuitor_diversity, "Intuitor")
+    plot_acc_vs_div(ttrl_acc, ttrl_diversity, "TTRL")
+    # plot_acc_vs_div(gt_acc, gt_diversity, "Ground Truth")
+    # plot_acc_vs_div(intuitor_acc, intuitor_diversity, "Intuitor")
 
-    # check how output accuracy changed after training
-    plot_heatmap(base_acc, gt_acc, "Base", "Ground Truth", metric="accuracy")
-    plot_heatmap(base_acc, intuitor_acc, "Base", "Intuitor", metric="accuracy")
-    plot_heatmap(gt_acc, intuitor_acc, "Ground Truth", "Intuitor", metric="accuracy")
+    # # check how output accuracy changed after training
+    plot_heatmap(base_acc, ttrl_acc, "Base", "TTRL", metric="accuracy")
+    # plot_heatmap(base_acc, intuitor_acc, "Base", "Intuitor", metric="accuracy")
+    # plot_heatmap(gt_acc, intuitor_acc, "Ground Truth", "Intuitor", metric="accuracy")
 
-    # check how output diversity changed after training
-    plot_heatmap(base_diversity, gt_diversity, "Base", "Ground Truth", metric="diversity")
-    plot_heatmap(base_diversity, intuitor_diversity, "Base", "Intuitor", metric="diversity")
-    plot_heatmap(gt_diversity, intuitor_diversity, "Ground Truth", "Intuitor", metric="diversity")
+    # # check how output diversity changed after training
+    plot_heatmap(base_diversity, ttrl_diversity, "Base", "TTRL", metric="diversity")
+    # plot_heatmap(base_diversity, intuitor_diversity, "Base", "Intuitor", metric="diversity")
+    # plot_heatmap(gt_diversity, intuitor_diversity, "Ground Truth", "Intuitor", metric="diversity")

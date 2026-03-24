@@ -1,0 +1,65 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Inherit the generic PPO trainer config, then override only TTRL-related fields here.
+defaults:
+  - ppo_trainer
+  - _self_
+
+# Rule-based reward manager configuration for TTRL.
+reward_model:
+
+  # Select the registered TTRL reward manager implementation.
+  reward_manager: ttrl
+
+  # TTRL-specific reward manager arguments.
+  reward_kwargs:
+
+    # EVOL-RL commonly oversamples 64 candidates per prompt during TTRL training.
+    n_votes_per_prompt: 8
+
+    # EVOL-RL commonly retains 32 samples per prompt after TTRL voting.
+    # Keep this less than or equal to n_votes_per_prompt when overriding the recipe.
+    n_samples_per_prompt: 8
+
+    # Keep eval grouping tied to validation repetition so the reward manager and
+    # trainer see the same prompt-level sample count during validation.
+    eval_n_samples: ${actor_rollout_ref.rollout.val_kwargs.n}
+
+# Rollout and actor settings commonly paired with TTRL experiments.
+actor_rollout_ref:
+
+  # Rollout model config.
+  rollout:
+
+    # Local verl repeats prompts before generation, so this stays tied to the
+    # TTRL vote count rather than being configured independently.
+    n: ${reward_model.reward_kwargs.n_votes_per_prompt}
+
+    # Validation rollout sampling config.
+    val_kwargs:
+
+      # Validation repetition count. For the current local TTRL port, this should
+      # match reward_model.reward_kwargs.eval_n_samples.
+      n: 8
+
+  # Actor config.
+  actor:
+
+    # Enable KL loss, which is commonly used in TTRL-style training recipes.
+    use_kl_loss: True
+
+# PPO algorithm settings commonly paired with TTRL experiments.
+algorithm:
+
+  # GRPO is the closest local analogue to the EVOL TTRL training setup.
+  adv_estimator: grpo
+
+# Trainer settings for EVOL-style TTRL ordering.
+trainer:
+
+  # Keep sequence-length balancing enabled; the trainer restores prompt order before TTRL reward.
+  balance_batch: True

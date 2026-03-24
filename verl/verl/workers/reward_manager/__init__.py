@@ -18,12 +18,14 @@ from .dapo import DAPORewardManager
 from .intuitor import IntuitorRewardManager
 from .naive import NaiveRewardManager
 from .prime import PrimeRewardManager
+from .ttrl import TTRLRewardManager
 
 # Note(haibin.lin): no need to include all reward managers here in case of complicated dependencies
 __all__ = [
     "BatchRewardManager",
     "DAPORewardManager",
     "IntuitorRewardManager",
+    "TTRLRewardManager",
     "NaiveRewardManager",
     "PrimeRewardManager",
     "register",
