@@ -45,6 +45,8 @@ To train a model with ttrl, run:
 bash examples/test_time_training/run_ttrl.sh
 ```
 
+TTRL configs can be changed in `verl/verl/trainer/config/ppo_ttrl.yaml`.
+
 
 ## Evaluate
 
