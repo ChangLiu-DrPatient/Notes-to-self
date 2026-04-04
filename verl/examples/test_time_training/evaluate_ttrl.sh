@@ -10,15 +10,15 @@ NUM_GPUS=2
 
 DATE=$(date +%m%d)
 TIME_TAG=$(date +%H%M%S)
-# MODEL_PATH=/raid/changl8/checkpoints/ttrl/Qwen3-1.7B-Base/0323-221418/global_step_58/merged_hf_model  # cannot end with /
-MODEL_PATH=Qwen/Qwen3-1.7B-Base
+# MODEL_PATH=/raid/changl9/checkpoints/ttrl/Llama-3.2-1B-Instruct/0402-125833/global_step_58/merged_hf_model  # cannot end with /
+MODEL_PATH=meta-llama/Llama-3.2-1B-Instruct
 N_SAMPLES=32
 
-if [[ "$MODEL_PATH" == Qwen/* ]]; then  # evaluate base model
-  OUTPUT_DIR="/raid/changl8/eval/base/${MODEL_PATH##*/}"
+if [[ "$MODEL_PATH" == Qwen/* || "$MODEL_PATH" == meta-llama/Llama* ]]; then  # evaluate base model or starts with Llama
+  OUTPUT_DIR="/raid/changl9/eval/base/${MODEL_PATH##*/}"
 else  # evaluate checkpoints
   OUTPUT_DIR=$(dirname "$MODEL_PATH")
-  OUTPUT_DIR="/raid/changl8/eval/ttrl-verl/${OUTPUT_DIR#/raid/changl8/checkpoints/}"
+  OUTPUT_DIR="/raid/changl9/eval/ttrl-verl/${OUTPUT_DIR#/raid/changl9/checkpoints/}"
 fi
 echo "OUTPUT_DIR=$OUTPUT_DIR"
 
@@ -30,11 +30,11 @@ unset RAY_ADDRESS
 unset RAY_NAMESPACE
 
 RUN_ID="${DATE}_${TIME_TAG}_$$"  # $$ is the current PID
-export RAY_TMPDIR="/raid/changl8/ray/${RUN_ID}"
+export RAY_TMPDIR="/raid/changl9/ray/${RUN_ID}"
 mkdir -p "$RAY_TMPDIR"
 
 # Find a free port and start a dedicated local Ray head.
-NODE_IP=$(hostname -I | awk '{print $1}')
+NODE_IP="127.0.0.1" #$(hostname -I | awk '{print $1}')
 for _ in {1..30}; do
   RAY_PORT=$(( 20000 + ($(id -u) % 8000) + (RANDOM % 1000) ))
   if ray start --head \
@@ -56,10 +56,15 @@ ray status || { echo "[Ray] failed to start" >&2; exit 1; }
 
 # Cleanup ray processes on script exit, error, or interruption (Ctrl+C)
 cleanup_ray() {
-  # Only kill processes associated with this run's temp dir.
-  pgrep -f "$RAY_TMPDIR" | xargs -r kill >/dev/null 2>&1 || true
-  sleep 1
+  echo "[Ray] Stopping Ray head node..."
+  # Use the specific temp dir to stop only this instance
+  ray stop --temp-dir "$RAY_TMPDIR" >/dev/null 2>&1 || true
+  
+  # Fallback: kill anything lingering related to this specific run
   pgrep -f "$RAY_TMPDIR" | xargs -r kill -9 >/dev/null 2>&1 || true
+  
+  # Securely remove the temp directory to wipe logs/traces
+  rm -rf "$RAY_TMPDIR"
 }
 trap cleanup_ray EXIT
 trap 'cleanup_ray; exit 130' INT
@@ -95,7 +100,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=$N_SAMPLES \
     actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \

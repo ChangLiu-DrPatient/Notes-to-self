@@ -1,6 +1,6 @@
 set -x
 
-LOCAL_DIR=/raid/xinyul2/checkpoints/grpo-intuitor/Qwen3-4B-Base/0307-135909/global_step_58/actor/
+LOCAL_DIR=/raid/changl8/checkpoints/ttrl/Llama-3.2-1B-Instruct/0402-125833/global_step_58/actor
 TARGET_DIR="$(dirname "$LOCAL_DIR")/merged_hf_model"
 
 

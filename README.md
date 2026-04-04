@@ -30,7 +30,7 @@ The `parquet` files will be generated under `~/data/`.
 
 To train a model, run:
 ```bash
-bash examples/test_time_training/run.sh
+bash examples/test_time_training/train_intuitor.sh
 ```
 
 Different supervision signals are managed by `reward_model.reward_manager` in `run.sh`. Current code supports
@@ -42,7 +42,7 @@ Different supervision signals are managed by `reward_model.reward_manager` in `r
 
 To train a model with ttrl, run:
 ```bash
-bash examples/test_time_training/run_ttrl.sh
+bash examples/test_time_training/train_ttrl.sh
 ```
 
 TTRL configs can be changed in `verl/verl/trainer/config/ppo_ttrl.yaml`.
@@ -56,7 +56,7 @@ bash examples/test_time_training/merge.sh
 ```
 Then run
 ```bash
-bash examples/test_time_training/evaluate.sh
+bash examples/test_time_training/evaluate_intuitor.sh
 ```
 
 For ttrl, run 
@@ -66,4 +66,4 @@ bash examples/test_time_training/evaluate_ttrl.sh
 
 ## Analysis
 
-The code to run analysis regarding prompt accuracy and diversity for base and trained models can be found in `scripts/analyze.py`.
+The code to run analysis regarding prompt accuracy and diversity/entropy for base and trained models can be found in `scripts/analyze.py`.
