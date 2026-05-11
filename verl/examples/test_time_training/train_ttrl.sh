@@ -10,11 +10,11 @@ NUM_GPUS=2
 
 DATE=$(date +%m%d)
 TIME_TAG=$(date +%H%M%S)
-# MODEL_PATH=Qwen/Qwen3-1.7B-Base
-MODEL_PATH=meta-llama/Llama-3.2-1B-Instruct
+MODEL_PATH=Qwen/Qwen3-1.7B-Base
+# MODEL_PATH=meta-llama/Llama-3.2-1B-Instruct
 
 MODEL_NAME="${MODEL_PATH##*/}"
-OUTPUT_DIR="/raid/changl8/checkpoints/ttrl/${MODEL_NAME}/${DATE}-${TIME_TAG}"
+OUTPUT_DIR="/raid/xinyul2/checkpoints/ttrl/${MODEL_NAME}/${DATE}-${TIME_TAG}"
 mkdir -p "$OUTPUT_DIR"
 LOG_FILE="${OUTPUT_DIR}/train.log"
 
@@ -23,11 +23,11 @@ unset RAY_ADDRESS
 unset RAY_NAMESPACE
 
 RUN_ID="${DATE}_${TIME_TAG}_$$"  # $$ is the current PID
-export RAY_TMPDIR="/raid/changl8/ray/${RUN_ID}"
+export RAY_TMPDIR="/raid/xinyul2/ray/${RUN_ID}"
 mkdir -p "$RAY_TMPDIR"
 
 # Find a free port and start a dedicated local Ray head.
-NODE_IP="127.0.0.1" #$(hostname -I | awk '{print $1}')
+NODE_IP=$(hostname -I | awk '{print $1}')  # 128.2.177.184 on dgx1
 for _ in {1..30}; do
   RAY_PORT=$(( 20000 + ($(id -u) % 8000) + (RANDOM % 1000) ))
   if ray start --head \
