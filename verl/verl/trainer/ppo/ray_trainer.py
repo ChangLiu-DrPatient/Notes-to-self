@@ -694,6 +694,13 @@ class RayPPOTrainer:
             sample_inputs.extend(input_texts)
             sample_uids.extend(test_batch.non_tensor_batch["uid"])
 
+            # Per-sample prompt/response token counts (non-pad tokens) for JSONL dumps.
+            attention_mask = test_batch.batch["attention_mask"]
+            prompt_lengths = attention_mask[:, : input_ids.shape[1]].sum(dim=1).cpu().tolist()
+            response_lengths = attention_mask[:, input_ids.shape[1] :].sum(dim=1).cpu().tolist()
+            reward_extra_infos_dict["prompt_token_count"].extend(prompt_lengths)
+            reward_extra_infos_dict["response_token_count"].extend(response_lengths)
+
             # evaluate using reward_function
             result = self._compute_or_extract_reward(test_batch, reward_fn=self.val_reward_fn, return_dict=True)
             reward_tensor = result["reward_tensor"]
