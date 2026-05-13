@@ -7,6 +7,27 @@
 # variant — only DATA_VAL and OUTPUT_DIR change between the A/B runs.
 #
 # DO NOT remove the Ray isolation block (CLAUDE.md invariant).
+#
+# --- Why can two ``0.jsonl`` dumps differ in *problem* count? ---
+#
+# The trainer appends one JSONL line per *rollout* (``val_kwargs.n`` per val row).
+# The number of distinct problems in a file is ``len(JSONL) / n`` when every row is
+# evaluated with the same ``n`` and nothing is dropped.
+#
+# Rows can be *missing* vs another eval if the **validation dataset** differs:
+#
+# - ``data.val_files`` / ``data.val_max_samples`` — not the same parquet or subsample.
+# - ``data.filter_overlong_prompts`` + ``data.max_prompt_length`` — longer prompts
+#   (e.g. HRLib-injected parquet) tokenize longer; a stricter cap drops more rows.
+#   A different ``actor_rollout_ref.model.path`` can use a different tokenizer and
+#   change which prompts pass the length filter.
+# - An incomplete validation run (crash / OOM) yields a partial JSONL.
+#
+# Lift metrics in ``hrlib_abstraction_lift.py`` aggregate over **all** baseline grouping keys;
+# treated rows missing for a key are scored as fail. Keys use
+# ``scripts.analyze._problem_group_key`` (``uid`` if present in JSONL, else ``data_source`` + user
+# turn). The dataset ``uid`` is normally **not** written into validation dumps. Use the same
+# ``val_files`` and data knobs across runs when you need identical coverage.
 
 set -x
 

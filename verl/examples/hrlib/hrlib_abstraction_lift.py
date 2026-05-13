@@ -15,14 +15,15 @@ Outputs:
 - ``{out_prefix}_lift.json`` — machine-readable summary + full win/regression lists, including
   per-flip **treated** decoded prompt (``input`` with retrieved abstractions) and per-rollout
   **baseline** / **treated** model outputs (``output`` + ``score``), plus aggregate
-  **pass@k** rates (default k=32): fraction of common problems with ≥1 correct rollout before
-  vs after retrieval (``pass_at_aggregate``), plus **subset pass@k** curve for
+  **pass@k** rates (default k=32): fraction of **baseline** problems with ≥1 correct rollout
+  before vs after (``pass_at_aggregate``). Baseline problems absent from the treated JSONL are
+  counted as **treated fail** (no rollouts). Plus **subset pass@k** curve for
   ``--pass_at_k_grid`` (default 1,2,4,8,16,32) under ``pass_at_aggregate.pass_at_k_subset_curve``.
 - ``{out_prefix}_lift.md`` — short human-readable report + optional problem table (includes the
   same aggregate pass rates and subset pass@k table).
 - **Stdout** — echoes aggregate pass@k (or pass@N when rollout counts vary) for baseline vs treated,
   plus a **pass@k curve** for k in ``--pass_at_k_grid`` (default 1,2,4,8,16,32) via the hypergeometric
-  subset formula (mean over problems of P(≥1 correct in k draws without replacement)).
+  subset formula (mean over **baseline** problems of P(≥1 correct in k draws without replacement)).
 
 Use ``--print_flip_details`` to echo prompts/outputs to stdout (truncated; full text stays in JSON).
 
@@ -201,6 +202,24 @@ def summarize_problem(key: str, rows: list[dict[str, Any]], *, score_threshold: 
     )
 
 
+def _missing_treated_problem(key: str, base_rows: list[dict[str, Any]]) -> ProblemRollouts:
+    """Treated JSONL has no lines for this baseline key: no rollouts, always fail."""
+    if not base_rows:
+        raise ValueError("empty base_rows")
+    _, gts, user = _first_line_meta(base_rows[0])
+    ds = _norm_data_source(base_rows[0].get("data_source"))
+    return ProblemRollouts(
+        problem_key=key,
+        data_source=ds,
+        ground_truth=gts,
+        user_problem=user[:2000] if user else "",
+        n_rollouts=0,
+        n_correct=0,
+        mean_score=0.0,
+        pass_at_n=0,
+    )
+
+
 def _serialize_problem(p: ProblemRollouts) -> dict[str, Any]:
     d = asdict(p)
     # JSON-safe ground_truth
@@ -227,9 +246,12 @@ def compare(
     common = sorted(keys_b & keys_t)
     only_b = sorted(keys_b - keys_t)
     only_t = sorted(keys_t - keys_b)
+    baseline_keys = sorted(keys_b)
+    n_baseline = len(baseline_keys)
 
     wins: list[dict[str, Any]] = []
     regressions: list[dict[str, Any]] = []
+    regressions_no_treated_rows = 0
     steady_ok: list[str] = []
     steady_fail: list[str] = []
     baseline_pass_sum = 0
@@ -239,9 +261,14 @@ def compare(
     grid_sums_b = {kk: 0.0 for kk in pass_at_k_grid}
     grid_sums_t = {kk: 0.0 for kk in pass_at_k_grid}
 
-    for key in common:
+    for key in baseline_keys:
         sb = summarize_problem(key, base_g[key], score_threshold=score_threshold)
-        st = summarize_problem(key, tre_g[key], score_threshold=score_threshold)
+        if key in tre_g:
+            st = summarize_problem(key, tre_g[key], score_threshold=score_threshold)
+            tre_rows = tre_g[key]
+        else:
+            st = _missing_treated_problem(key, base_g[key])
+            tre_rows = []
         baseline_pass_sum += sb.pass_at_n
         treated_pass_sum += st.pass_at_n
         rollouts_b.append(sb.n_rollouts)
@@ -251,7 +278,7 @@ def compare(
             grid_sums_t[kk] += _subset_pass_at_k_prob(st.n_rollouts, st.n_correct, kk)
 
         if sb.pass_at_n == 0 and st.pass_at_n == 1:
-            flip = _flip_prompts_and_outputs(base_g[key], tre_g[key])
+            flip = _flip_prompts_and_outputs(base_g[key], tre_rows)
             wins.append(
                 {
                     "baseline": _serialize_problem(sb),
@@ -260,7 +287,7 @@ def compare(
                 }
             )
         elif sb.pass_at_n == 1 and st.pass_at_n == 0:
-            flip = _flip_prompts_and_outputs(base_g[key], tre_g[key])
+            flip = _flip_prompts_and_outputs(base_g[key], tre_rows)
             regressions.append(
                 {
                     "baseline": _serialize_problem(sb),
@@ -268,27 +295,29 @@ def compare(
                     **flip,
                 }
             )
+            if not tre_rows:
+                regressions_no_treated_rows += 1
         elif sb.pass_at_n == 1 and st.pass_at_n == 1:
             steady_ok.append(key)
         else:
             steady_fail.append(key)
 
-    n_common = len(common)
     rb_min = min(rollouts_b) if rollouts_b else 0
     rb_max = max(rollouts_b) if rollouts_b else 0
     rt_min = min(rollouts_t) if rollouts_t else 0
     rt_max = max(rollouts_t) if rollouts_t else 0
     consistent_k = (
-        n_common > 0
-        and rb_min == rb_max == rt_min == rt_max == pass_at_k
+        n_baseline > 0
+        and rb_min == rb_max == pass_at_k
+        and rt_min == rt_max == pass_at_k
     )
-    baseline_rate = baseline_pass_sum / n_common if n_common else 0.0
-    treated_rate = treated_pass_sum / n_common if n_common else 0.0
+    baseline_rate = baseline_pass_sum / n_baseline if n_baseline else 0.0
+    treated_rate = treated_pass_sum / n_baseline if n_baseline else 0.0
 
     pass_k_curve: list[dict[str, Any]] = []
     for kk in pass_at_k_grid:
-        br_k = grid_sums_b[kk] / n_common if n_common else 0.0
-        tr_k = grid_sums_t[kk] / n_common if n_common else 0.0
+        br_k = grid_sums_b[kk] / n_baseline if n_baseline else 0.0
+        tr_k = grid_sums_t[kk] / n_baseline if n_baseline else 0.0
         pass_k_curve.append(
             {
                 "k": kk,
@@ -302,6 +331,8 @@ def compare(
         "baseline_jsonl": os.path.abspath(baseline_path),
         "treated_jsonl": os.path.abspath(treated_path),
         "score_threshold_correct": score_threshold,
+        "aggregation_scope": "baseline_jsonl_keys",
+        "n_problems_in_aggregate": n_baseline,
         "n_problems_baseline_only": len(only_b),
         "n_problems_treated_only": len(only_t),
         "n_problems_common": len(common),
@@ -319,25 +350,28 @@ def compare(
             "rollouts_per_problem_treated_max": rt_max,
             "all_common_problems_have_k_rollouts": consistent_k,
             "note": (
-                f"Mean pass@{pass_at_k} over common problems when every problem has exactly "
-                f"{pass_at_k} rollouts; otherwise interpret as pass@N with N = rollouts per problem "
-                f"(see min/max)."
+                f"Denominator is **all {n_baseline} baseline** problems; each has exactly "
+                f"{pass_at_k} rollouts on both sides, so aggregate pass@{pass_at_k} is exact."
                 if consistent_k
                 else (
-                    "Rollout counts vary or differ from --pass_at_k; rates are still "
-                    "(# problems with ≥1 correct rollout) / n_common using all rollouts per problem."
+                    f"Denominator is **all {n_baseline} baseline** problems. "
+                    f"{len(only_b)} lack treated JSONL rows and are scored as treated fail (0 rollouts). "
+                    f"Aggregate is (# problems with ≥1 correct rollout) / n_baseline; treated rollout "
+                    f"min/max include 0 when any problem is missing on the treated side."
                 )
             ),
             "pass_at_k_subset_curve": pass_k_curve,
             "pass_at_k_subset_method": (
                 "Per problem: P(≥1 correct among k_eff draws) = 1 - C(w,k_eff)/C(n,k_eff) for "
-                "k_eff = min(k, n) and w = n - n_correct; mean over common problems. "
-                "Draws are a uniform random k_eff-subset of the n empirical rollouts (without replacement)."
+                "k_eff = min(k, n) and w = n - n_correct; **mean over all baseline problems**. "
+                "Treated problems with n=0 contribute 0. Draws are uniform without replacement "
+                "among the n empirical rollouts for that side."
             ),
         },
         "counts": {
             "wins_wrong_to_right": len(wins),
             "regressions_right_to_wrong": len(regressions),
+            "regressions_with_no_treated_rows": regressions_no_treated_rows,
             "steady_both_pass": len(steady_ok),
             "steady_both_fail": len(steady_fail),
         },
@@ -403,9 +437,12 @@ def write_reports(report: dict[str, Any], out_prefix: str) -> tuple[str, str]:
         "",
         "## Summary",
         "",
-        f"- Common problems: **{report['n_problems_common']}**",
+        f"- Aggregate over **{report.get('n_problems_in_aggregate', report['n_problems_common'])}** baseline problems "
+        f"(`aggregation_scope`: {report.get('aggregation_scope', 'baseline_jsonl_keys')})",
+        f"- Also in both JSONLs (common keys): **{report['n_problems_common']}**",
         f"- Wins (baseline pass@N=0 → treated pass@N=1): **{report['counts']['wins_wrong_to_right']}**",
-        f"- Regressions (baseline pass@N=1 → treated pass@N=0): **{report['counts']['regressions_right_to_wrong']}**",
+        f"- Regressions (baseline pass@N=1 → treated pass@N=0): **{report['counts']['regressions_right_to_wrong']}** "
+        f"({report['counts'].get('regressions_with_no_treated_rows', 0)} with **no** treated rows)",
         f"- Steady both pass: **{report['counts']['steady_both_pass']}**",
         f"- Steady both fail: **{report['counts']['steady_both_fail']}**",
         "",
@@ -414,13 +451,14 @@ def write_reports(report: dict[str, Any], out_prefix: str) -> tuple[str, str]:
     ]
     agg = report.get("pass_at_aggregate") or {}
     k = agg.get("k", 32)
+    n_agg = report.get("n_problems_in_aggregate", report["n_problems_common"])
     md.append(
         f"- **Baseline** pass rate: **{agg.get('baseline_pass_rate', 0):.4f}** "
-        f"({agg.get('baseline_problems_solved', 0)}/{report['n_problems_common']} problems with ≥1 correct rollout)"
+        f"({agg.get('baseline_problems_solved', 0)}/{n_agg} problems with ≥1 correct rollout)"
     )
     md.append(
         f"- **Treated** pass rate: **{agg.get('treated_pass_rate', 0):.4f}** "
-        f"({agg.get('treated_problems_solved', 0)}/{report['n_problems_common']})"
+        f"({agg.get('treated_problems_solved', 0)}/{n_agg})"
     )
     md.append(
         f"- **Δ (treated − baseline):** **{agg.get('delta_treated_minus_baseline', 0):+.4f}**"
@@ -432,7 +470,10 @@ def write_reports(report: dict[str, Any], out_prefix: str) -> tuple[str, str]:
         f"{agg.get('rollouts_per_problem_treated_max')}"
     )
     if agg.get("all_common_problems_have_k_rollouts"):
-        md.append(f"- Declared **pass@{k}** matches file rollout count for all common problems.")
+        md.append(
+            f"- Declared **pass@{k}** matches rollout count on **all** baseline problems for baseline "
+            f"and treated."
+        )
     else:
         md.append(
             f"- Rollout count is not uniformly **{k}**; see JSON `pass_at_aggregate.note` for interpretation."
@@ -443,8 +484,9 @@ def write_reports(report: dict[str, Any], out_prefix: str) -> tuple[str, str]:
         md.append("### Pass@k subset curve (hypergeometric)")
         md.append("")
         md.append(
-            "Mean over common problems of P(≥1 correct in **k** random draws without replacement "
-            "from that problem’s **n** empirical rollouts; if **n < k**, **k_eff = min(k, n)**. "
+            "Mean over **baseline** problems of P(≥1 correct in **k** random draws without replacement "
+            "from that problem’s **n** empirical rollouts; if **n < k**, **k_eff = min(k, n)** "
+            "(missing treated rows use **n=0** → 0). "
             "See JSON `pass_at_aggregate.pass_at_k_subset_method`."
         )
         md.append("")
@@ -505,8 +547,8 @@ def main() -> int:
         type=int,
         default=32,
         help=(
-            "declared k for pass@k reporting (default 32). Aggregate rates use all rollouts per "
-            "problem; when every common problem has exactly this many rollouts, pass@k is exact."
+            "declared k for pass@k reporting (default 32). Denominator is all baseline problems; "
+            "when each has exactly this many rollouts on both sides, aggregate pass@k is exact."
         ),
     )
     p.add_argument(
@@ -585,7 +627,7 @@ def main() -> int:
     )
     curve = agg.get("pass_at_k_subset_curve") or []
     if curve:
-        print("[hrlib_abstraction_lift] subset pass@k (hypergeometric mean over problems):")
+        print("[hrlib_abstraction_lift] subset pass@k (hypergeometric mean over baseline problems):")
         for row in curve:
             print(
                 f"  k={row['k']}: baseline={row['baseline_pass_rate']:.4f} "

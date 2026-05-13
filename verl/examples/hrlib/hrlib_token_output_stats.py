@@ -4,14 +4,14 @@
 Combines:
 
 1. **Character count** of ``output`` (cheap proxy; always computed).
-2. **Token counts** when present on every rollout of every common problem in *both*
-   JSONLs: ``response_token_count`` and ``prompt_token_count`` (from
-   ``RayPPOTrainer._validate`` dumps in recent verl).
+2. **Token counts** when present on every rollout of every **common** problem (in both JSONLs):
+   ``response_token_count`` and ``prompt_token_count`` (from ``RayPPOTrainer._validate`` dumps).
 
 Joins:
 
 - **Lift-style buckets** (recomputed from baseline + treated JSONLs): win, regression,
-  steady_both_pass, steady_both_fail (same rules as ``hrlib_abstraction_lift.compare``).
+  steady_both_pass, steady_both_fail (same rules as ``hrlib_abstraction_lift.compare``: baseline
+  problems missing from the treated file count as treated fail).
 - **LLM-judge buckets** (optional ``judge_results.jsonl``): effective relevant use vs not.
 
 Outputs ``{out_prefix}_token_output_report.json`` and ``_token_output_report.md``.
@@ -39,9 +39,9 @@ from typing import Any, Callable, Literal
 import numpy as np
 
 try:
-    from examples.hrlib.hrlib_abstraction_lift import load_grouped, summarize_problem
+    from examples.hrlib.hrlib_abstraction_lift import _missing_treated_problem, load_grouped, summarize_problem
 except ImportError:
-    from hrlib_abstraction_lift import load_grouped, summarize_problem
+    from hrlib_abstraction_lift import _missing_treated_problem, load_grouped, summarize_problem
 
 LiftBucket = Literal["win", "regression", "steady_both_pass", "steady_both_fail"]
 JudgeBucket = Literal[
@@ -139,10 +139,13 @@ def lift_bucket_for(
     *,
     score_threshold: float,
 ) -> LiftBucket | None:
-    if key not in base_g or key not in tre_g:
+    if key not in base_g:
         return None
     sb = summarize_problem(key, base_g[key], score_threshold=score_threshold)
-    st = summarize_problem(key, tre_g[key], score_threshold=score_threshold)
+    if key in tre_g:
+        st = summarize_problem(key, tre_g[key], score_threshold=score_threshold)
+    else:
+        st = _missing_treated_problem(key, base_g[key])
     if sb.pass_at_n == 0 and st.pass_at_n == 1:
         return "win"
     if sb.pass_at_n == 1 and st.pass_at_n == 0:
@@ -275,6 +278,7 @@ def main() -> None:
 
     base_g = load_grouped(args.baseline)
     tre_g = load_grouped(args.treated)
+    baseline_keys = sorted(base_g.keys())
     common = sorted(set(base_g) & set(tre_g))
     judge_map = load_judge_labels(args.judge.strip() or None)
 
@@ -292,25 +296,33 @@ def main() -> None:
     tre_means_ptok: list[float] = []
     deltas_ptok: list[float] = []
 
-    for key in common:
+    for key in baseline_keys:
         lb = lift_bucket_for(key, base_g, tre_g, score_threshold=args.score_threshold)
         if lb is None:
             continue
         bmc = per_problem_mean_chars(base_g[key])
-        tmc = per_problem_mean_chars(tre_g[key])
+        tmc = per_problem_mean_chars(tre_g.get(key, []))
         base_means_chars.append(bmc)
         tre_means_chars.append(tmc)
         deltas_chars.append(tmc - bmc)
 
         if resp_tok_ok:
-            bmr = per_problem_mean_numeric(base_g[key], "response_token_count")
-            tmr = per_problem_mean_numeric(tre_g[key], "response_token_count")
+            if key in tre_g:
+                bmr = per_problem_mean_numeric(base_g[key], "response_token_count")
+                tmr = per_problem_mean_numeric(tre_g[key], "response_token_count")
+            else:
+                bmr = float("nan")
+                tmr = float("nan")
             base_means_rtok.append(bmr)
             tre_means_rtok.append(tmr)
             deltas_rtok.append(tmr - bmr)
         if prompt_tok_ok:
-            bmp = per_problem_mean_numeric(base_g[key], "prompt_token_count")
-            tmp = per_problem_mean_numeric(tre_g[key], "prompt_token_count")
+            if key in tre_g:
+                bmp = per_problem_mean_numeric(base_g[key], "prompt_token_count")
+                tmp = per_problem_mean_numeric(tre_g[key], "prompt_token_count")
+            else:
+                bmp = float("nan")
+                tmp = float("nan")
             base_means_ptok.append(bmp)
             tre_means_ptok.append(tmp)
             deltas_ptok.append(tmp - bmp)
@@ -345,27 +357,30 @@ def main() -> None:
     all_tre_rtok: list[int] = []
     all_base_ptok: list[int] = []
     all_tre_ptok: list[int] = []
-    for key in common:
+    for key in baseline_keys:
         all_base_chars.extend(rollout_char_lengths(base_g[key]))
-        all_tre_chars.extend(rollout_char_lengths(tre_g[key]))
+        if key in tre_g:
+            all_tre_chars.extend(rollout_char_lengths(tre_g[key]))
         if resp_tok_ok:
             for r in base_g[key]:
                 v = _numeric_field(r, "response_token_count")
                 if v is not None:
                     all_base_rtok.append(v)
-            for r in tre_g[key]:
-                v = _numeric_field(r, "response_token_count")
-                if v is not None:
-                    all_tre_rtok.append(v)
+            if key in tre_g:
+                for r in tre_g[key]:
+                    v = _numeric_field(r, "response_token_count")
+                    if v is not None:
+                        all_tre_rtok.append(v)
         if prompt_tok_ok:
             for r in base_g[key]:
                 v = _numeric_field(r, "prompt_token_count")
                 if v is not None:
                     all_base_ptok.append(v)
-            for r in tre_g[key]:
-                v = _numeric_field(r, "prompt_token_count")
-                if v is not None:
-                    all_tre_ptok.append(v)
+            if key in tre_g:
+                for r in tre_g[key]:
+                    v = _numeric_field(r, "prompt_token_count")
+                    if v is not None:
+                        all_tre_ptok.append(v)
 
     report: dict[str, Any] = {
         "note": (
@@ -382,6 +397,7 @@ def main() -> None:
         "treated_jsonl": os.path.abspath(args.treated),
         "judge_jsonl": os.path.abspath(args.judge) if args.judge and os.path.isfile(args.judge) else None,
         "score_threshold": args.score_threshold,
+        "n_baseline_problems": len(baseline_keys),
         "n_common_problems": len(common),
         "overall": {
             "per_problem_mean_output_chars": {
