@@ -8,6 +8,8 @@ export PYTHONUNBUFFERED=1
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-2}
 NUM_GPUS=${NUM_GPUS:-1}
+GPU_MEM=${GPU_MEM:-0.8}
+MICRO_BSZ=${MICRO_BSZ:-8}
 ROLLOUT_TP=${ROLLOUT_TP:-$NUM_GPUS}
 
 DATE=$(date +%m%d)
@@ -21,12 +23,12 @@ ROUND_TAG=${ROUND_TAG:-round0}
 SCORE_AFTER_COLLECT=${SCORE_AFTER_COLLECT:-1}
 
 MODEL_NAME="${MODEL_PATH##*/}"
-OUTPUT_DIR="/raid/${USER}/traces/${MODEL_NAME}/${DATE}-${TIME_TAG}-${ROUND_TAG}"
-mkdir -p "$OUTPUT_DIR"
-LOG_FILE="${OUTPUT_DIR}/collect.log"
-TRACE_PARQUET="${OUTPUT_DIR}/traces_${ROUND_TAG}.parquet"
+OUT_DIR=${OUT_DIR:-"/raid/${USER}/traces/${MODEL_NAME}/${DATE}-${TIME_TAG}-${ROUND_TAG}"}
+mkdir -p "$OUT_DIR"
+LOG_FILE="${OUT_DIR}/collect.log"
+TRACE_PARQUET="${OUT_DIR}/traces.parquet"
 LABELED_PARQUET="${TRACE_PARQUET%.parquet}_labeled.parquet"
-VAL_DUMP_DIR="${OUTPUT_DIR}/val_generations"
+VAL_DUMP_DIR="${OUT_DIR}/val_generations"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERL_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -97,7 +99,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.1 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=128 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${MICRO_BSZ} \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.005 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -105,16 +107,16 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${MICRO_BSZ} \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.tensor_model_parallel_size="$ROLLOUT_TP" \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEM" \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n="$N_SAMPLES" \
     actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
     actor_rollout_ref.rollout.val_kwargs.top_k=20 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${MICRO_BSZ} \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
@@ -128,7 +130,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.validation_data_dir="$VAL_DUMP_DIR" \
     trainer.max_actor_ckpt_to_keep=0 \
     trainer.max_critic_ckpt_to_keep=0 \
-    trainer.default_local_dir="$OUTPUT_DIR" \
+    trainer.default_local_dir="$OUT_DIR" \
     trainer.total_epochs=1 \
     2>&1 | tee "$LOG_FILE"
 

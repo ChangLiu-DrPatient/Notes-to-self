@@ -6,7 +6,8 @@ This script has two subcommands:
 1) ``build``: convert an input prompt parquet into a rewrite-prompt parquet
    (one user instruction per row asking the model for concept keywords).
 2) ``merge``: take validation JSONL generations from ``main_ppo`` and replace
-   original user turns with generated rewrite text.
+   original user turns with generated rewrite text, writing meta under
+   ``meta/<out_stem>_rewrite_meta.json``.
 """
 
 from __future__ import annotations
@@ -89,18 +90,40 @@ def _rewrite_prompt_messages(problem_text: str) -> list[dict[str, str]]:
     ]
 
 
+def _alignment_key_user_text(text: str) -> str:
+    """Remove all whitespace for stable merge keys (tokenizer / template spacing drift)."""
+    return "".join(str(text).split())
+
+
 def _extract_user_content(input_text: str) -> str:
+    """Decode-dump user turn (same heuristics as val_jsonl_to_trace_parquet)."""
     if not isinstance(input_text, str):
         return ""
+    prefix = "user\n"
     suffix = "\nassistant\n"
-    if input_text.endswith(suffix):
-        body = input_text[: -len(suffix)]
+    if input_text.startswith(prefix) and input_text.endswith(suffix):
+        return input_text[len(prefix) : -len(suffix)]
+
+    for sep in ("user\n\n", "user\n"):
+        if sep in input_text:
+            after = input_text.split(sep, 1)[1]
+            for suf in ("assistant\n\n", "assistant\n", "\nassistant\n"):
+                if after.endswith(suf):
+                    after = after[: -len(suf)]
+                    break
+            return after.rstrip()
+
+    # Legacy: suffix without leading system (rfind user marker)
+    legacy_suffix = "\nassistant\n"
+    if input_text.endswith(legacy_suffix):
+        body = input_text[: -len(legacy_suffix)]
         marker = "\nuser\n"
         pos = body.rfind(marker)
         if pos >= 0:
             return body[pos + len(marker) :]
         if body.startswith("user\n"):
             return body[len("user\n") :]
+
     return input_text
 
 
@@ -153,7 +176,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="directory with validation jsonl dumps (or a single jsonl file)",
     )
-    m.add_argument("--out", dest="output_path", required=True, type=Path, help="rewritten parquet")
+    m.add_argument(
+        "--out",
+        dest="output_path",
+        required=True,
+        type=Path,
+        help="rewritten parquet; writes meta/<stem>_rewrite_meta.json under its directory",
+    )
     m.add_argument("--query_from", default="user", help="role whose content gets replaced")
     m.add_argument("--overwrite", action="store_true", help="allow clobbering output parquet")
 
@@ -198,7 +227,9 @@ def _run_merge(args: argparse.Namespace) -> int:
         raise FileNotFoundError(f"--original not found: {args.original}")
     if args.output_path.exists() and not args.overwrite:
         raise FileExistsError(f"--out already exists: {args.output_path} (pass --overwrite)")
+    meta_dir = args.output_path.parent / "meta"
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
 
     jsonl_path = _resolve_jsonl_source(args.val_jsonl_dir)
     entries = _load_jsonl_entries(jsonl_path)
@@ -208,7 +239,8 @@ def _run_merge(args: argparse.Namespace) -> int:
         input_text = _extract_user_content(str(item.get("input", "")))
         data_source = str(item.get("data_source", ""))
         output_text = str(item.get("output", "")).strip()
-        rewrites_by_key[(input_text, data_source)].append(output_text)
+        key = (_alignment_key_user_text(input_text), data_source)
+        rewrites_by_key[key].append(output_text)
 
     df = pd.read_parquet(args.original).copy()
     if "prompt" not in df.columns:
@@ -223,7 +255,7 @@ def _run_merge(args: argparse.Namespace) -> int:
         original_text = _find_message_content(prompt, args.query_from)
         instruction = _rewrite_instruction(original_text)
         data_source = str(row.get("data_source", "")) if hasattr(row, "get") else ""
-        key = (instruction, data_source)
+        key = (_alignment_key_user_text(instruction), data_source)
         q = rewrites_by_key.get(key)
 
         if q:
@@ -248,7 +280,7 @@ def _run_merge(args: argparse.Namespace) -> int:
     df["prompt"] = rewritten_prompts
     df.to_parquet(args.output_path, index=False)
 
-    meta_path = args.output_path.with_name(args.output_path.stem + "_rewrite_meta.json")
+    meta_path = meta_dir / f"{args.output_path.stem}_rewrite_meta.json"
     meta = {
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "original_parquet": str(args.original),

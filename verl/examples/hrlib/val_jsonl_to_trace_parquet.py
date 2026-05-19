@@ -48,13 +48,34 @@ def _group_entries(entries: list[dict[str, Any]], n_samples: int) -> tuple[list[
 
 
 def _extract_user_content(input_text: str) -> str:
+    """Match parquet user text from dumped decode input (may include a leading system block).
+
+    vLLM/tokenizer dumps the full templated string (e.g. Llama 3: ``system`` … ``user`` … ``assistant``),
+    not the minimal ``user\\n…\\nassistant\\n`` shape.
+    """
     if not isinstance(input_text, str):
         return ""
     prefix = "user\n"
     suffix = "\nassistant\n"
     if input_text.startswith(prefix) and input_text.endswith(suffix):
         return input_text[len(prefix) : -len(suffix)]
+
+    # Multi-role templates: take text after the ``user`` role header, strip trailing ``assistant``
+    for sep in ("user\n\n", "user\n"):
+        if sep in input_text:
+            after = input_text.split(sep, 1)[1]
+            for suf in ("assistant\n\n", "assistant\n", "\nassistant\n"):
+                if after.endswith(suf):
+                    after = after[: -len(suf)]
+                    break
+            return after.rstrip()
+
     return input_text
+
+
+def _alignment_key_user_text(text: str) -> str:
+    """Strip all whitespace for key matching only (handles tokenizer/template spacing drift)."""
+    return "".join(str(text).split())
 
 
 def _extract_prompt_content(prompt_obj: Any) -> str:
@@ -86,6 +107,72 @@ def _extract_ground_truth(reward_model_obj: Any) -> str:
     return str(reward_model_obj)
 
 
+def _print_failing_alignment_example(
+    generation_by_key: dict[tuple[str, str, str], deque[tuple[list[str], str]]],
+    df: pd.DataFrame,
+    *,
+    max_parquet_matches: int = 8,
+    user_head: int = 320,
+) -> None:
+    """After alignment, print one leftover JSONL key and parquet rows that share user+data_source (if any)."""
+    picked_key: tuple[str, str, str] | None = None
+    for key, bucket in generation_by_key.items():
+        if bucket:
+            picked_key = key
+            break
+    if picked_key is None:
+        print("[debug-failing] No leftover bucket found (unexpected).", flush=True)
+        return
+
+    user_j, ds_j, gts_j = picked_key
+    n_left = sum(len(generation_by_key[k]) for k in generation_by_key if generation_by_key[k])
+    print(
+        f"[debug-failing] First unmatched alignment key ({n_left} total leftover groups across all keys):",
+        flush=True,
+    )
+    print(f"  jsonl data_source={ds_j!r}", flush=True)
+    print(f"  jsonl gts (key third component)={gts_j!r}", flush=True)
+    print(f"  alignment user key (all whitespace removed) len={len(user_j)} head ({user_head} chars):\n  {user_j[:user_head]!r}", flush=True)
+
+    matches: list[tuple[Any, str, str, Any]] = []
+    for idx, row in df.iterrows():
+        u_p = _extract_prompt_content(row.get("prompt"))
+        ds_p = str(row.get("data_source", ""))
+        u_norm = _alignment_key_user_text(u_p)
+        if u_norm != user_j or ds_p != ds_j:
+            continue
+        rm = row.get("reward_model")
+        gt_raw: Any = None
+        if isinstance(rm, dict):
+            gt_raw = rm.get("ground_truth")
+        gt_str = _extract_ground_truth(rm)
+        matches.append((idx, gt_str, type(gt_raw).__name__, gt_raw))
+
+    if not matches:
+        print(
+            "[debug-failing] No parquet row matches the same (normalized user text, data_source). "
+            "Likely prompt-text mismatch after extraction.",
+            flush=True,
+        )
+        return
+
+    print(
+        f"[debug-failing] Parquet row(s) with same normalized user + data_source ({len(matches)} total; "
+        f"showing up to {max_parquet_matches}):",
+        flush=True,
+    )
+    for row_entry in matches[:max_parquet_matches]:
+        idx, gt_str, gt_type_name, gt_raw = row_entry
+        triple_match = gt_str == gts_j
+        print(
+            f"  df row index={idx}: str(ground_truth)={gt_str!r} "
+            f"(raw type={gt_type_name}, raw value={gt_raw!r}) triple_equals_jsonl_gts={triple_match}",
+            flush=True,
+        )
+    if len(matches) > max_parquet_matches:
+        print(f"  ... {len(matches) - max_parquet_matches} more parquet rows omitted.", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert val JSONL to trace parquet.")
     parser.add_argument("--source_parquet", required=True, help="Original dataset parquet used as val_files")
@@ -100,25 +187,25 @@ def main() -> None:
     _group_entries(entries, args.n_samples)
 
     df = pd.read_parquet(args.source_parquet).reset_index(drop=True)
+
     generation_by_key: dict[tuple[str, str, str], deque[tuple[list[str], str]]] = defaultdict(deque)
     for start in range(0, len(entries), args.n_samples):
         chunk = entries[start : start + args.n_samples]
         first = chunk[0]
         key = (
-            _extract_user_content(str(first.get("input", ""))),
+            _alignment_key_user_text(_extract_user_content(str(first.get("input", "")))),
             str(first.get("data_source", "")),
             str(first.get("gts", "")),
         )
         generation_by_key[key].append(
             ([str(item.get("output", "")) for item in chunk], str(first.get("gts", "")))
         )
-
     selected_indices: list[int] = []
     aligned_outputs: list[list[str]] = []
     aligned_ground_truth: list[str] = []
     for idx, row in df.iterrows():
         key = (
-            _extract_prompt_content(row.get("prompt")),
+            _alignment_key_user_text(_extract_prompt_content(row.get("prompt"))),
             str(row.get("data_source", "")),
             _extract_ground_truth(row.get("reward_model")),
         )
@@ -130,7 +217,9 @@ def main() -> None:
         aligned_ground_truth.append(ground_truth)
 
     unmatched_generation = sum(len(bucket) for bucket in generation_by_key.values())
+    
     if unmatched_generation > 0:
+        _print_failing_alignment_example(generation_by_key, df)
         raise ValueError(
             f"Could not align {unmatched_generation * args.n_samples} generated entries back to source rows. "
             "Please verify input prompt formatting and data_source/ground_truth fields."

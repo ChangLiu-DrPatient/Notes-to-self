@@ -6,11 +6,11 @@ if [[ "${TRACE_COMMANDS:-0}" == "1" ]]; then
 fi
 
 # Defaults point at the smoke extraction output from 10_extract_smoke.sh.
-LABELED_PARQUET_DEFAULT="/raid/$USER/traces/Qwen3-1.7B-Base/0419-165032-round0/traces_round0_labeled.parquet"
+LABELED_PARQUET_DEFAULT="/raid/$USER/traces/Qwen3-1.7B-Base/traces_round0_labeled.parquet"
 EXTRACT_DIR_DEFAULT="$(dirname "$LABELED_PARQUET_DEFAULT")/extract_full"
 
 RAW_JSONL=${RAW_JSONL:-"$EXTRACT_DIR_DEFAULT/raw_abstractions.jsonl"}
-OUT_DIR=${OUT_DIR:-"$(dirname "$RAW_JSONL")/library_v1_semantic"}
+OUT_DIR=${OUT_DIR:-"$(dirname "$RAW_JSONL")"}
 METHOD=${METHOD:-semantic}
 TEXT_RATIO=${TEXT_RATIO:-80}
 SEMANTIC_RATIO=${SEMANTIC_RATIO:-0.85}

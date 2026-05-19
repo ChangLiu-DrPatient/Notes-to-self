@@ -9,7 +9,7 @@ fi
 # standard MATH-500 eval split; override any of these via environment.
 # Smoke check tip:
 #   LIMIT=5 bash examples/hrlib/30_inject.sh
-# Then verify injection_meta.json includes:
+# Then verify meta/<stem>_injection_meta.json includes:
 #   - "query_recipe": "[{subject}] {user_text}"
 #   - non-empty "subject_counts"
 LIBRARY_DIR_DEFAULT="/raid/$USER/traces/Qwen3-1.7B-Base/0419-165032-round0/extract_full/library_v1_semantic"
@@ -26,7 +26,7 @@ RETRIEVAL_MODE=${RETRIEVAL_MODE:-score_gate}  # orig | rewrite | score_gate
 DEVICE=${DEVICE:-auto}
 LIMIT=${LIMIT:-}
 PREVIEW_CHARS=${PREVIEW_CHARS:-1200}
-TEMPLATE=${TEMPLATE:-v1}      # v1 | std_rag
+TEMPLATE=${TEMPLATE:-std_rag}      # v1 | std_rag
 CLEAN_OUTPUT=${CLEAN_OUTPUT:-1}
 DUMP_SCORES=${DUMP_SCORES:-}
 QUERY_GATE=${QUERY_GATE:-off}  # legacy compat: off | score
@@ -78,10 +78,12 @@ if [[ -n "$QUERY_PARQUET" && ! -f "$QUERY_PARQUET" ]]; then
     exit 1
 fi
 
-META_PATH="${OUT_PARQUET%.parquet}_injection_meta.json"
-SCORES_PATH="${OUT_PARQUET%.parquet}_scores.jsonl"
+OUT_STEM=$(basename "${OUT_PARQUET%.parquet}")
+META_DIR="$(dirname "$OUT_PARQUET")/meta"
+META_PATH="$META_DIR/${OUT_STEM}_injection_meta.json"
+SCORES_PATH="$META_DIR/${OUT_STEM}_scores.jsonl"
 
-mkdir -p "$(dirname "$OUT_PARQUET")"
+mkdir -p "$(dirname "$OUT_PARQUET")" "$META_DIR"
 if [[ "$CLEAN_OUTPUT" == "1" ]]; then
     rm -f "$OUT_PARQUET" "$META_PATH" "$SCORES_PATH"
 fi
@@ -133,7 +135,7 @@ SECTION_RULE="==================================================================
 
 echo ""
 echo "$SECTION_RULE"
-echo "injection_meta.json"
+echo "meta/${OUT_STEM}_injection_meta.json"
 echo "$SECTION_RULE"
 if [[ -f "$META_PATH" ]]; then
     cat "$META_PATH"

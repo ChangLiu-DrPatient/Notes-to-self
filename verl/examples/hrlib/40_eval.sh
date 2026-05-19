@@ -2,9 +2,9 @@
 # Stage 0 HRLib evaluation (validation-only main_ppo).
 #
 # Mirrors examples/test_time_training/evaluate_intuitor.sh but takes MODEL_PATH,
-# DATA_VAL, OUTPUT_DIR, N_SAMPLES, NUM_GPUS, CUDA_VISIBLE_DEVICES from the env so
+# DATA_VAL, OUT_DIR, N_SAMPLES, NUM_GPUS, CUDA_VISIBLE_DEVICES from the env so
 # the SAME script runs both the vanilla baseline and the flat_top6 HRLib-injected
-# variant — only DATA_VAL and OUTPUT_DIR change between the A/B runs.
+# variant — only DATA_VAL and OUT_DIR change between the A/B runs.
 #
 # DO NOT remove the Ray isolation block (CLAUDE.md invariant).
 #
@@ -38,7 +38,8 @@ PYTHONUNBUFFERED=1
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,4}  # change as needed
 NUM_GPUS=${NUM_GPUS:-4}
-
+GPU_MEM=${GPU_MEM:-0.8}
+MICRO_BSZ=${MICRO_BSZ:-8}
 DATE=$(date +%m%d)
 TIME_TAG=$(date +%H%M%S)
 
@@ -50,20 +51,21 @@ DATA_TRAIN=${DATA_TRAIN:-"$HOME/data/math/train.parquet"}
 ROLLOUT_TP=${ROLLOUT_TP:-1}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-"hrlib-eval-${DATE}_${TIME_TAG}"}
 
-# OUTPUT_DIR: explicit env wins; otherwise derive from MODEL_PATH using the
+
+# OUT_DIR: explicit env wins; otherwise derive from MODEL_PATH using the
 # same convention as evaluate_intuitor.sh but under the current $USER.
-if [[ -z "${OUTPUT_DIR:-}" ]]; then
+if [[ -z "${OUT_DIR:-}" ]]; then
   if [[ "$MODEL_PATH" == Qwen/* ]]; then
-    OUTPUT_DIR="/raid/$USER/eval/hrlib/base/${MODEL_PATH##*/}"
+    OUT_DIR="/raid/$USER/eval/hrlib/base/${MODEL_PATH##*/}"
   else
     _MODEL_DIR=$(dirname "$MODEL_PATH")
-    OUTPUT_DIR="/raid/$USER/eval/hrlib/${_MODEL_DIR#/raid/$USER/checkpoints/}"
+    OUT_DIR="/raid/$USER/eval/hrlib/${_MODEL_DIR#/raid/$USER/checkpoints/}"
   fi
 fi
-echo "OUTPUT_DIR=$OUTPUT_DIR"
+echo "OUT_DIR=$OUT_DIR"
 
-mkdir -p "$OUTPUT_DIR"
-LOG_FILE="${OUTPUT_DIR}/evaluation.log"
+mkdir -p "$OUT_DIR"
+LOG_FILE="${OUT_DIR}/evaluation.log"
 
 # ---------------- Ray isolation (single-node) ----------------
 unset RAY_ADDRESS
@@ -124,7 +126,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.1 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=128 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${MICRO_BSZ} \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.005 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -132,17 +134,17 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${MICRO_BSZ} \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.tensor_model_parallel_size="$ROLLOUT_TP" \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEM" \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=$N_SAMPLES \
     actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
     actor_rollout_ref.rollout.val_kwargs.top_k=20 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${MICRO_BSZ} \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
@@ -155,8 +157,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name="$EXPERIMENT_NAME" \
     trainer.save_freq=2000000 \
     trainer.test_freq=10 \
-    trainer.validation_data_dir="$OUTPUT_DIR" \
+    trainer.validation_data_dir="$OUT_DIR" \
     trainer.max_actor_ckpt_to_keep=0 \
     trainer.max_critic_ckpt_to_keep=0 \
-    trainer.default_local_dir="$OUTPUT_DIR" \
+    trainer.default_local_dir="$OUT_DIR" \
     trainer.total_epochs=0 2>&1 | tee "$LOG_FILE"

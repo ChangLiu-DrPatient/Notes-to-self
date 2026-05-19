@@ -2,8 +2,10 @@
 """Fine-grained HRLib eval: problems that go from wrong → correct after abstraction injection.
 
 Compares two VERL validation JSONLs (e.g. vanilla vs ``test_hrlib_v1``) that share the same
-underlying items. Pairing uses :func:`scripts.analyze._problem_group_key` (user turn +
-``data_source``), not raw ``input``.
+underlying items. Default pairing groups lines with :func:`scripts.analyze._problem_group_key`
+(user turn + ``data_source``). Use ``--group-by consecutive --rollouts-per-group N`` when dumps are
+contiguous ``N`` rollouts per prompt (file order) — robust to chat templates that break user-turn
+extraction.
 
 **Pass@N** here is computed from per-rollout ``score`` fields: ``pass@N = 1`` if any of the
 ``N`` rollouts for that problem has score indicating correct (default: ``>= 1 - 1e-6`` for
@@ -12,28 +14,22 @@ one; this script defines pass@N explicitly for documentation.
 
 Outputs:
 
-- ``{out_prefix}_lift.json`` — machine-readable summary + full win/regression lists, including
-  per-flip **treated** decoded prompt (``input`` with retrieved abstractions) and per-rollout
-  **baseline** / **treated** model outputs (``output`` + ``score``), plus aggregate
-  **pass@k** rates (default k=32): fraction of **baseline** problems with ≥1 correct rollout
-  before vs after (``pass_at_aggregate``). Baseline problems absent from the treated JSONL are
-  counted as **treated fail** (no rollouts). Plus **subset pass@k** curve for
-  ``--pass_at_k_grid`` (default 1,2,4,8,16,32) under ``pass_at_aggregate.pass_at_k_subset_curve``.
-- ``{out_prefix}_lift.md`` — short human-readable report + optional problem table (includes the
-  same aggregate pass rates and subset pass@k table).
-- **Stdout** — echoes aggregate pass@k (or pass@N when rollout counts vary) for baseline vs treated,
-  plus a **pass@k curve** for k in ``--pass_at_k_grid`` (default 1,2,4,8,16,32) via the hypergeometric
-  subset formula (mean over **baseline** problems of P(≥1 correct in k draws without replacement)).
+- **File artifacts** — only when ``--out_prefix PATH`` is set:
+  paired mode writes ``{PATH}_lift.json`` / ``{PATH}_lift.md``; ``--single-jsonl`` writes
+  ``{PATH}_single.json``. The paired JSON lists wins/regressions, per-rollout payloads, aggregate
+  pass@k over baseline problems (default k=32), and subset curves for ``--pass_at_k_grid``.
+- **Stdout** — aggregate pass rates, win/regression counts, and subset curve lines (paired mode); or
+  pass@ metrics and accuracy lines (single-jsonl mode). Use ``--print_flip_details`` for prompts /
+  rollout samples (paired); full flip lists stay in the JSON artifact when ``--out_prefix`` is given.
 
-Use ``--print_flip_details`` to echo prompts/outputs to stdout (truncated; full text stays in JSON).
+Without ``--out_prefix``, runs are **stdout-only** (no files written).
 
-Example::
+Example (paired lift): ``cd verl`` then ``--baseline ... --treated ...``; add ``--out_prefix ...``
+to persist reports.
 
-    cd verl
-    python examples/hrlib/hrlib_abstraction_lift.py \
-        --baseline /raid/$USER/eval/hrlib/stage0/vanilla/0.jsonl \
-        --treated  /raid/$USER/eval/hrlib/stage0/v1/0.jsonl \
-        --out_prefix Figs/hrlib_stage0/lift_v1_dom
+Single-file metrics: ``python examples/hrlib/hrlib_abstraction_lift.py --single-jsonl /path/to/0.jsonl``.
+Optional ``--out_prefix Figs/run_a`` saves ``Figs/run_a_single.json``. Add ``--group-by consecutive``
+for chunk grouping (default ``rollouts-per-group`` = ``--pass_at_k``).
 """
 
 from __future__ import annotations
@@ -48,7 +44,7 @@ from typing import Any
 
 import numpy as np
 
-from scripts.analyze import _problem_group_key, _user_turn_from_verl_decoded_input
+from scripts.analyze import _problem_group_key, _user_turn_from_verl_decoded_input, overall_accuracy
 
 
 @dataclass
@@ -80,17 +76,57 @@ def _first_line_meta(line: dict[str, Any]) -> tuple[str, Any, str]:
     return key, gts, user
 
 
-def load_grouped(path: str) -> dict[str, list[dict[str, Any]]]:
-    by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+def load_grouped_consecutive(path: str, rollouts_per_group: int) -> dict[str, list[dict[str, Any]]]:
+    """Group JSONL lines in file order: each block of ``rollouts_per_group`` lines is one problem.
+
+    Assumes validation dumped rollouts contiguously (same ``val_kwargs.n`` per prompt, dataset order).
+    """
+    if rollouts_per_group < 1:
+        raise ValueError("rollouts_per_group must be >= 1")
+    rows: list[dict[str, Any]] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            data = json.loads(line)
-            k = _problem_group_key(data)
-            by_key[k].append(data)
-    return dict(by_key)
+            rows.append(json.loads(line))
+    n = len(rows)
+    if n == 0:
+        return {}
+    if n % rollouts_per_group != 0:
+        raise ValueError(
+            f"{path}: line count {n} is not divisible by rollouts_per_group={rollouts_per_group}; "
+            "refusing an incomplete trailing chunk."
+        )
+    n_groups = n // rollouts_per_group
+    out: dict[str, list[dict[str, Any]]] = {}
+    for g in range(n_groups):
+        out[f"consecutive::{g:06d}"] = rows[g * rollouts_per_group : (g + 1) * rollouts_per_group]
+    return out
+
+
+def load_grouped(
+    path: str,
+    *,
+    group_by: str = "problem_key",
+    rollouts_per_group: int | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    if group_by == "problem_key":
+        by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                k = _problem_group_key(data)
+                by_key[k].append(data)
+        return dict(by_key)
+    if group_by == "consecutive":
+        if rollouts_per_group is None:
+            raise ValueError("rollouts_per_group is required when group_by=consecutive")
+        return load_grouped_consecutive(path, rollouts_per_group)
+    raise ValueError(f"unknown group_by: {group_by!r} (expected problem_key or consecutive)")
 
 
 def _str_output(val: Any) -> str:
@@ -238,9 +274,20 @@ def compare(
     max_examples_md: int,
     pass_at_k: int,
     pass_at_k_grid: list[int],
+    group_by: str = "problem_key",
+    rollouts_per_group: int | None = None,
 ) -> dict[str, Any]:
-    base_g = load_grouped(baseline_path)
-    tre_g = load_grouped(treated_path)
+    base_g = load_grouped(baseline_path, group_by=group_by, rollouts_per_group=rollouts_per_group)
+    tre_g = load_grouped(treated_path, group_by=group_by, rollouts_per_group=rollouts_per_group)
+
+    if group_by == "consecutive":
+        nb_lines = sum(len(v) for v in base_g.values())
+        nt_lines = sum(len(v) for v in tre_g.values())
+        if nb_lines != nt_lines:
+            raise ValueError(
+                "consecutive grouping: baseline and treated JSONLs must have the same line count "
+                f"(got {nb_lines} vs {nt_lines}); pairing assumes identical rollout layout."
+            )
 
     keys_b, keys_t = set(base_g), set(tre_g)
     common = sorted(keys_b & keys_t)
@@ -327,11 +374,18 @@ def compare(
             }
         )
 
+    scope = (
+        "baseline_jsonl_keys_consecutive_chunks"
+        if group_by == "consecutive"
+        else "baseline_jsonl_keys_semantic"
+    )
     report = {
         "baseline_jsonl": os.path.abspath(baseline_path),
         "treated_jsonl": os.path.abspath(treated_path),
         "score_threshold_correct": score_threshold,
-        "aggregation_scope": "baseline_jsonl_keys",
+        "group_by": group_by,
+        "rollouts_per_group": rollouts_per_group,
+        "aggregation_scope": scope,
         "n_problems_in_aggregate": n_baseline,
         "n_problems_baseline_only": len(only_b),
         "n_problems_treated_only": len(only_t),
@@ -382,6 +436,111 @@ def compare(
     }
     report["_md_fragment"] = _markdown_table(wins, max_rows=max_examples_md)
     return report
+
+
+def summarize_single_jsonl(
+    jsonl_path: str,
+    *,
+    score_threshold: float,
+    pass_at_k: int,
+    pass_at_k_grid: list[int],
+    group_by: str = "problem_key",
+    rollouts_per_group: int | None = None,
+) -> dict[str, Any]:
+    """Aggregate pass@ metrics for one validation JSONL (no pairing across runs).
+
+    Use when baseline vs treated JSONLs are not comparable (e.g. different models /
+    chat templates so ``_problem_group_key`` would not align across files).
+    Grouping is ``problem_key`` (semantic) or ``consecutive`` (fixed-size chunks in file order).
+    """
+    groups = load_grouped(jsonl_path, group_by=group_by, rollouts_per_group=rollouts_per_group)
+    keys = sorted(groups.keys())
+    n_problems = len(keys)
+    pass_sum = 0
+    rollouts_per: list[int] = []
+    grid_sums = {kk: 0.0 for kk in pass_at_k_grid}
+
+    for key in keys:
+        sp = summarize_problem(key, groups[key], score_threshold=score_threshold)
+        pass_sum += sp.pass_at_n
+        rollouts_per.append(sp.n_rollouts)
+        for kk in pass_at_k_grid:
+            grid_sums[kk] += _subset_pass_at_k_prob(sp.n_rollouts, sp.n_correct, kk)
+
+    rb_min = min(rollouts_per) if rollouts_per else 0
+    rb_max = max(rollouts_per) if rollouts_per else 0
+    consistent_k = n_problems > 0 and rb_min == rb_max == pass_at_k
+    pass_rate = pass_sum / n_problems if n_problems else 0.0
+
+    pass_k_curve: list[dict[str, Any]] = []
+    for kk in pass_at_k_grid:
+        pass_k_curve.append(
+            {
+                "k": kk,
+                "pass_rate": grid_sums[kk] / n_problems if n_problems else 0.0,
+            }
+        )
+
+    micro, macro, n_lines, n_prompts_raw = overall_accuracy(jsonl_path)
+
+    note_agg = (
+        f"Denominator is **all {n_problems}** grouped problems; each has exactly "
+        f"{pass_at_k} rollouts, so aggregate pass@{pass_at_k} is exact."
+        if consistent_k
+        else (
+            f"Denominator is **all {n_problems}** grouped problems ({group_by}). "
+            f"Rollout count varies by problem; aggregate pass@{pass_at_k} is "
+            f"(# problems with ≥1 correct rollout) / {n_problems}."
+        )
+    )
+
+    scope_single = (
+        "consecutive_chunks_within_jsonl"
+        if group_by == "consecutive"
+        else "problem_group_key_within_jsonl"
+    )
+    note_mm = (
+        "micro/macro from scripts.analyze.overall_accuracy group rollouts by raw `input` string; "
+        "`n_problems_grouped` uses consecutive fixed-size chunks in JSONL order "
+        f"(rollouts_per_group={rollouts_per_group})."
+        if group_by == "consecutive"
+        else (
+            "micro/macro from scripts.analyze.overall_accuracy group rollouts by raw `input` string; "
+            "`n_problems_grouped` uses `_problem_group_key` (uid or data_source+user_turn). "
+            "Counts differ when prompts differ only outside the user turn or when uid usage differs."
+        )
+    )
+
+    return {
+        "mode": "single_jsonl",
+        "jsonl": os.path.abspath(jsonl_path),
+        "score_threshold_correct": score_threshold,
+        "group_by": group_by,
+        "rollouts_per_group": rollouts_per_group,
+        "aggregation_scope": scope_single,
+        "pass_at_n_definition": "1 if any rollout score >= score_threshold_correct, else 0",
+        "n_problems_grouped": n_problems,
+        "overall_rollout_accuracy_micro": micro,
+        "overall_prompt_accuracy_macro_raw_input": macro,
+        "n_rollout_lines": n_lines,
+        "n_prompts_raw_input_distinct": n_prompts_raw,
+        "note_micro_macro_vs_grouped": note_mm,
+        "pass_at_aggregate": {
+            "k": pass_at_k,
+            "pass_rate": pass_rate,
+            "problems_solved": pass_sum,
+            "rollouts_per_problem_min": rb_min,
+            "rollouts_per_problem_max": rb_max,
+            "all_problems_have_k_rollouts": consistent_k,
+            "note": note_agg,
+            "pass_at_k_subset_curve": pass_k_curve,
+            "pass_at_k_subset_method": (
+                "Per problem: P(≥1 correct among k_eff draws) = 1 - C(w,k_eff)/C(n,k_eff) for "
+                "k_eff = min(k, n) and w = n - n_correct; **mean over all grouped problems**. "
+                "Draws are uniform without replacement among the n empirical rollouts."
+            ),
+        },
+    }
 
 
 def _parse_pass_at_k_grid(s: str) -> list[int]:
@@ -529,12 +688,33 @@ def write_reports(report: dict[str, Any], out_prefix: str) -> tuple[str, str]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("Example::")[0].strip())
-    p.add_argument("--baseline", required=True, help="validation JSONL (e.g. vanilla / no HRLib)")
-    p.add_argument("--treated", required=True, help="validation JSONL (e.g. injected parquet eval)")
+    p.add_argument(
+        "--baseline",
+        default=None,
+        help="validation JSONL for paired lift mode (use with --treated)",
+    )
+    p.add_argument(
+        "--treated",
+        default=None,
+        help="validation JSONL for paired lift mode (use with --baseline)",
+    )
+    p.add_argument(
+        "--single-jsonl",
+        default=None,
+        metavar="PATH",
+        help=(
+            "standalone mode: compute pass@ metrics for one JSONL only (no pairing). "
+            "Use when comparing runs that do not share `_problem_group_key` across files."
+        ),
+    )
     p.add_argument(
         "--out_prefix",
-        default=os.path.join("Figs", "hrlib_stage0", "lift"),
-        help="output path prefix (writes {prefix}_lift.json and {prefix}_lift.md)",
+        default=None,
+        metavar="PATH",
+        help=(
+            "output path prefix. Paired mode writes PATH_lift.json / PATH_lift.md; "
+            "--single-jsonl writes PATH_single.json. If omitted, no files are written (stdout only)."
+        ),
     )
     p.add_argument(
         "--score_threshold",
@@ -561,6 +741,25 @@ def main() -> int:
         ),
     )
     p.add_argument(
+        "--group-by",
+        choices=("problem_key", "consecutive"),
+        default="problem_key",
+        help=(
+            "problem_key: group lines via scripts.analyze._problem_group_key (default). "
+            "consecutive: each block of rollouts-per-group JSONL lines (file order) is one problem."
+        ),
+    )
+    p.add_argument(
+        "--rollouts-per-group",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with --group-by consecutive: lines per problem block (default: same as --pass_at_k). "
+            "Ignored for problem_key grouping."
+        ),
+    )
+    p.add_argument(
         "--max_examples_md",
         type=int,
         default=30,
@@ -569,7 +768,10 @@ def main() -> int:
     p.add_argument(
         "--print_flip_details",
         action="store_true",
-        help="print treated prompts and baseline/treated model outputs for wins and regressions (truncated; full in JSON)",
+        help=(
+            "print treated prompts and baseline/treated outputs for wins and regressions "
+            "(truncated; paired mode: full payloads only in JSON when --out_prefix is set)"
+        ),
     )
     p.add_argument(
         "--print_max_problems",
@@ -598,6 +800,57 @@ def main() -> int:
     args = p.parse_args()
 
     k_grid = _parse_pass_at_k_grid(args.pass_at_k_grid)
+    rollouts_per_group: int | None = None
+    if args.group_by == "consecutive":
+        rollouts_per_group = args.rollouts_per_group if args.rollouts_per_group is not None else args.pass_at_k
+
+    if args.single_jsonl is not None:
+        if args.baseline is not None or args.treated is not None:
+            p.error("With --single-jsonl, do not pass --baseline or --treated.")
+        report = summarize_single_jsonl(
+            args.single_jsonl,
+            score_threshold=args.score_threshold,
+            pass_at_k=args.pass_at_k,
+            pass_at_k_grid=k_grid,
+            group_by=args.group_by,
+            rollouts_per_group=rollouts_per_group,
+        )
+        if args.out_prefix is not None:
+            json_path = f"{args.out_prefix}_single.json"
+            out_dir = os.path.dirname(os.path.abspath(json_path))
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
+            print(f"[hrlib_abstraction_lift] wrote {json_path}")
+        agg = report["pass_at_aggregate"]
+        k = agg["k"]
+        pr = agg["pass_rate"]
+        rb = f"{agg['rollouts_per_problem_min']}–{agg['rollouts_per_problem_max']}"
+        pass_label = f"pass@{k}" if agg["all_problems_have_k_rollouts"] else f"pass@N (N={rb})"
+        n_grp = report["n_problems_grouped"]
+        print(
+            f"[hrlib_abstraction_lift] single-jsonl grouped_problems={n_grp}: "
+            f"{pass_label}={pr:.4f} ({agg['problems_solved']}/{n_grp} solved)"
+        )
+        micro = report["overall_rollout_accuracy_micro"]
+        macro = report["overall_prompt_accuracy_macro_raw_input"]
+        mi_s = f"{micro:.4f}" if micro == micro else "nan"
+        ma_s = f"{macro:.4f}" if macro == macro else "nan"
+        print(
+            f"[hrlib_abstraction_lift] overall_accuracy micro={mi_s} macro(raw_input)={ma_s} "
+            f"(lines={report['n_rollout_lines']}, distinct_raw_prompts={report['n_prompts_raw_input_distinct']})"
+        )
+        curve = agg.get("pass_at_k_subset_curve") or []
+        if curve:
+            print("[hrlib_abstraction_lift] subset pass@k (hypergeometric mean over grouped problems):")
+            for row in curve:
+                print(f"  k={row['k']}: pass_rate={row['pass_rate']:.4f}")
+        return 0
+
+    if args.baseline is None or args.treated is None:
+        p.error("Provide both --baseline and --treated, or use --single-jsonl PATH.")
+
     report = compare(
         args.baseline,
         args.treated,
@@ -605,10 +858,13 @@ def main() -> int:
         max_examples_md=args.max_examples_md,
         pass_at_k=args.pass_at_k,
         pass_at_k_grid=k_grid,
+        group_by=args.group_by,
+        rollouts_per_group=rollouts_per_group,
     )
-    jp, mp = write_reports(report, args.out_prefix)
-    print(f"[hrlib_abstraction_lift] wrote {jp}")
-    print(f"[hrlib_abstraction_lift] wrote {mp}")
+    if args.out_prefix is not None:
+        jp, mp = write_reports(report, args.out_prefix)
+        print(f"[hrlib_abstraction_lift] wrote {jp}")
+        print(f"[hrlib_abstraction_lift] wrote {mp}")
     agg = report.get("pass_at_aggregate") or {}
     k = agg.get("k", args.pass_at_k)
     br = agg.get("baseline_pass_rate", 0.0)

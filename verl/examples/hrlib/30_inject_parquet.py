@@ -7,7 +7,8 @@ Stage 0 v1 (see implementation_plan_stage0_3.md §5.2.4): for every row,
 2. Retrieve ``top_k`` library hits (flat cosine top-k via
    :class:`hrlib.retrieve.FlatRetriever`).
 3. Render them with :func:`render_hits` and prepend to the system message.
-4. Write a new parquet and a sibling ``injection_meta.json`` receipt.
+4. Write a new parquet plus ``meta/<out_stem>_injection_meta.json`` (and optionally
+   ``meta/<out_stem>_scores.jsonl`` under the output parquet directory).
 
 No row is dropped; ``prompt``/``data_source``/``reward_model``/``extra_info``
 remain structurally identical apart from the edited system turn.
@@ -426,7 +427,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="output_path",
         required=True,
         type=Path,
-        help="output parquet path; a sibling injection_meta.json is also written",
+        help="output parquet path; meta/<stem>_injection_meta.json under its directory is also written",
     )
     p.add_argument(
         "--query_parquet",
@@ -503,7 +504,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dump_scores",
         action="store_true",
         help=(
-            "write a sibling '<out_stem>_scores.jsonl' sidecar with per-problem "
+            "write 'meta/<out_stem>_scores.jsonl' (under output dir) with per-problem "
             "full cosine score vectors and top-k hit details for diagnostics"
         ),
     )
@@ -604,7 +605,9 @@ def main(argv: list[str] | None = None) -> int:
         raise FileExistsError(
             f"--out already exists: {args.output_path} (pass --overwrite to replace)"
         )
+    meta_dir = args.output_path.parent / "meta"
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         renderer = RENDERERS[args.template]
@@ -683,9 +686,10 @@ def main(argv: list[str] | None = None) -> int:
     gate_rows = 0
     gate_selected_original_rows = 0
     gate_selected_rewrite_rows = 0
+    out_stem = args.output_path.stem
     scores_sidecar_path: Path | None = None
     if args.dump_scores:
-        scores_sidecar_path = args.output_path.with_name(args.output_path.stem + "_scores.jsonl")
+        scores_sidecar_path = meta_dir / f"{out_stem}_scores.jsonl"
 
     score_writer_context = (
         scores_sidecar_path.open("w", encoding="utf-8")
@@ -867,7 +871,7 @@ def main(argv: list[str] | None = None) -> int:
         "selected_rewrite_rows": int(gate_selected_rewrite_rows),
     }
 
-    meta_path = args.output_path.with_name(args.output_path.stem + "_injection_meta.json")
+    meta_path = meta_dir / f"{out_stem}_injection_meta.json"
     _write_meta(
         meta_path,
         retriever,

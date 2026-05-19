@@ -4,6 +4,10 @@
 Usage:
   python examples/hrlib/score_gate_diagnostics.py \
     --scores /path/to/test_hrlib_*_scores.jsonl
+
+If non-parquet sidecars were moved under ~/data/MATH-500/meta/, you can keep passing
+the old sibling path next to the parquet; when it is missing, the same basename is
+tried under --meta-dir (default ~/data/MATH-500/meta).
 """
 
 from __future__ import annotations
@@ -14,10 +18,36 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
+DEFAULT_SCORES_META_DIR = Path.home() / "data" / "MATH-500" / "meta"
+
+
+def _resolve_scores_path(scores: Path, meta_dir: Path) -> Path:
+    """Prefer the given path; else same basename under meta_dir (post clean-up layout)."""
+    scores = scores.expanduser()
+    meta_dir = meta_dir.expanduser()
+    tried: list[str] = []
+    if scores.exists():
+        return scores.resolve()
+    tried.append(str(scores))
+    fallback = meta_dir / scores.name
+    tried.append(str(fallback))
+    if fallback.exists():
+        return fallback.resolve()
+    raise FileNotFoundError("--scores not found (also tried meta fallback):\n  " + "\n  ".join(tried))
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Summarize score gate diagnostics from scores sidecar.")
     p.add_argument("--scores", type=Path, required=True, help="path to *_scores.jsonl")
+    p.add_argument(
+        "--meta-dir",
+        type=Path,
+        default=DEFAULT_SCORES_META_DIR,
+        help=(
+            "if --scores path does not exist, try <meta-dir>/<basename> "
+            f"(default: {DEFAULT_SCORES_META_DIR})"
+        ),
+    )
     p.add_argument("--top_n", type=int, default=10, help="how many top gain/loss rows to print")
     p.add_argument(
         "--show_rows",
@@ -87,11 +117,10 @@ def _extract_selected_top1(rec: dict[str, Any], selected_source: str) -> float |
 
 def main() -> int:
     args = _parse_args()
-    if not args.scores.exists():
-        raise FileNotFoundError(f"--scores not found: {args.scores}")
+    scores_path = _resolve_scores_path(args.scores, args.meta_dir)
 
     rows: list[dict[str, Any]] = []
-    with args.scores.open("r", encoding="utf-8") as f:
+    with scores_path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -101,7 +130,7 @@ def main() -> int:
                 rows.append(obj)
 
     if not rows:
-        raise ValueError(f"scores file is empty: {args.scores}")
+        raise ValueError(f"scores file is empty: {scores_path}")
 
     chosen_top1: list[float] = []
     orig_top1: list[float] = []
@@ -156,7 +185,7 @@ def main() -> int:
                 loss_rows.append(payload)
 
     n = len(rows)
-    print(f"scores_file: {args.scores}")
+    print(f"scores_file: {scores_path}")
     print(f"rows: {n}")
     print(f"rewrite_found_rows: {rewrite_found_rows} ({rewrite_found_rows / n:.2%})")
     print(f"selected_rewrite_rows: {rewrite_selected} ({rewrite_selected / n:.2%})")

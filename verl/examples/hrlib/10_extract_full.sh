@@ -18,11 +18,13 @@ fi
 
 : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY first}"
 
-LABELED_PARQUET=${LABELED_PARQUET:-/raid/$USER/traces/Qwen3-1.7B-Base/0419-165032-round0/traces_round0_labeled.parquet}
-MODEL=${MODEL:-openai/gpt-oss-120b:free}
-FALLBACK_MODEL=${FALLBACK_MODEL:-openai/gpt-oss-120b}
+LABELED_PARQUET=${LABELED_PARQUET:-/raid/$USER/traces/Qwen3-1.7B-Base/traces_round0_labeled.parquet}
+# MODEL=${MODEL:-openai/gpt-oss-120b:free}
+# FALLBACK_MODEL=${FALLBACK_MODEL:-openai/gpt-oss-120b}
+MODEL=${MODEL:-deepseek/deepseek-v4-flash}
+FALLBACK_MODEL=${FALLBACK_MODEL:-deepseek/deepseek-v4-flash}
 NO_FALLBACK=${NO_FALLBACK:-0}
-MAX_CONCURRENCY=${MAX_CONCURRENCY:-20}
+MAX_CONCURRENCY=${MAX_CONCURRENCY:-40}
 CLEAN_OUTPUT=${CLEAN_OUTPUT:-0}
 FALLBACK_DEMO_MODE=${FALLBACK_DEMO_MODE:-0}
 PREVIEW_JSONL=${PREVIEW_JSONL:-0}
@@ -31,14 +33,14 @@ RESUME_FROM=${RESUME_FROM:-}
 if [[ "$FALLBACK_DEMO_MODE" == "1" ]]; then
     echo "[info] FALLBACK_DEMO_MODE=1: subset + higher concurrency to encourage free-tier rate limits (429) -> paid fallback."
     OUT_DIR=${OUT_DIR:-$(dirname "$LABELED_PARQUET")/extract_full_fallback_demo}
-    MAX_CONCURRENCY=${DEMO_MAX_CONCURRENCY:-24}
+    MAX_CONCURRENCY=${DEMO_MAX_CONCURRENCY:-20}
     LIMIT_SUCCESS=${LIMIT_SUCCESS:-40}
     LIMIT_FAILURE=${LIMIT_FAILURE:-40}
     # Fresh demo run (override global CLEAN_OUTPUT=0 default).
     CLEAN_OUTPUT=1
     PREVIEW_JSONL=${PREVIEW_JSONL:-1}
 else
-    OUT_DIR=${OUT_DIR:-$(dirname "$LABELED_PARQUET")/extract_full}
+    OUT_DIR=${OUT_DIR:-$(dirname "$LABELED_PARQUET")}
 fi
 
 mkdir -p "$OUT_DIR"
