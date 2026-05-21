@@ -1,4 +1,4 @@
-# "Notes to Self: Can LLMs Benefit from Experiential Abstractions?
+# Notes to Self: Can LLMs Benefit from Experiential Abstractions?
 
 Pipeline for building a retrieval library of math reasoning abstractions from model traces, injecting them at test time, and optionally fine-tuning with GRPO. All commands run from `verl/`.
 
