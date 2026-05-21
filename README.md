@@ -72,7 +72,7 @@ conda activate verl
 
 # common exports
 export MODEL_FAMILY="meta-llama" #"Qwen"
-export MODEL_NAME="Llama-3.2-3B-Instruct" #"Qwen2.5-1.5B-Instruct" 
+export MODEL_NAME="Llama-3.2-3B-Instruct" #"Qwen2.5-1.5B-Instruct" #"Qwen3-1.7B-Base"
 export MODEL_PATH="$MODEL_FAMILY/$MODEL_NAME"
 export TRACE_ROOT="/raid/$USER/traces/$MODEL_NAME"
 export EVAL_ROOT="/raid/$USER/eval/abs/$MODEL_NAME"
@@ -116,8 +116,8 @@ bash examples/test_time_training/merge.sh
 
 MODEL_PATH="$CHECKPOINT_ROOT/grpo/global_step_58/merged_hf_model" \
 OUT_DIR="$EVAL_ROOT/grpo/" \
-CUDA_VISIBLE_DEVICES="0,1" \
-NUM_GPUS=2 \
+CUDA_VISIBLE_DEVICES="0,1,2,4" \
+NUM_GPUS=4 \
 GPU_MEM=0.8 \
 MICRO_BSZ=1 \
 bash examples/hrlib/40_eval.sh
@@ -297,8 +297,8 @@ bash examples/test_time_training/merge.sh
 
 MODEL_PATH="$CHECKPOINT_ROOT/grpo-injected/global_step_58/merged_hf_model" \
 OUT_DIR="$EVAL_ROOT/grpo-injected/" \
-CUDA_VISIBLE_DEVICES="2,4" \
-NUM_GPUS=2 \
+CUDA_VISIBLE_DEVICES="0,1,2,4" \
+NUM_GPUS=4 \
 GPU_MEM=0.8 \
 MICRO_BSZ=1 \
 bash examples/hrlib/40_eval.sh
@@ -318,7 +318,8 @@ bash examples/hrlib/40_eval.sh
 #### Training
 
 ```bash
-TRAIN_DATA_PATH="$HOME/data/math/Qwen3-1.7B-Base/train_abstraction_re_gated.parquet" \
+#! need to modify TRAIN_DATA_PATH based on your generation using the above scripts by setting models to Qwen/Qwen3-1.7B-Base
+TRAIN_DATA_PATH="$HOME/data/math/Qwen3-1.7B-Base/train_abstraction_re_gated.parquet" \ 
 MODEL_PATH="$MODEL_PATH" \
 OUT_DIR="$CHECKPOINT_ROOT/grpo-qwen" \
 CUDA_VISIBLE_DEVICES="0,1,2,4" \
@@ -332,8 +333,8 @@ bash examples/test_time_training/merge.sh
 
 MODEL_PATH="$CHECKPOINT_ROOT/grpo-qwen/global_step_58/merged_hf_model" \
 OUT_DIR="$EVAL_ROOT/grpo-injected-qwen/" \
-CUDA_VISIBLE_DEVICES="2,4" \
-NUM_GPUS=2 \
+CUDA_VISIBLE_DEVICES="0,1,2,4" \
+NUM_GPUS=4 \
 GPU_MEM=0.8 \
 MICRO_BSZ=1 \
 bash examples/hrlib/40_eval.sh
